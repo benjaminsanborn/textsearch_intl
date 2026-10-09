@@ -2,11 +2,15 @@
 
 #include "fmgr.h"
 #include "mb/pg_wchar.h"
+#include "nodes/parsenodes.h"
+#include "nodes/pg_list.h"
 #include "tsearch/ts_public.h"
 #include "utils/builtins.h"
 #include "utils/memutils.h"
 
 #include <unicode/ubrk.h>
+#include <unicode/unorm2.h>
+#include <unicode/ustring.h>
 #include <unicode/utext.h>
 #include <unicode/uversion.h>
 #include <unicode/uchar.h>
@@ -187,4 +191,152 @@ icu_parser_icu_version(PG_FUNCTION_ARGS)
 	u_getVersion(version);
 	u_versionToString(version, buf);
 	PG_RETURN_TEXT_P(cstring_to_text(buf));
+}
+
+/*
+ * NFKC splits the Thai and Lao vowel sara am into nikhahit + sara aa, which
+ * ICU's dictionaries don't recognize, so the pair is recombined afterwards.
+ */
+static int32
+recombine_and_strip(UChar *buf, int32 len)
+{
+	int32		out = 0;
+
+	for (int32 i = 0; i < len; i++)
+	{
+		UChar		c = buf[i];
+
+		if (c == 0x0027 || c == 0x2019)
+			continue;
+		if (i + 1 < len && c == 0x0E4D && buf[i + 1] == 0x0E32)
+		{
+			buf[out++] = 0x0E33;
+			i++;
+			continue;
+		}
+		if (i + 1 < len && c == 0x0ECD && buf[i + 1] == 0x0EB2)
+		{
+			buf[out++] = 0x0EB3;
+			i++;
+			continue;
+		}
+		buf[out++] = c;
+	}
+	return out;
+}
+
+static char *
+normalize_token(const char *in, int32 len)
+{
+	UErrorCode	status = U_ZERO_ERROR;
+	const UNormalizer2 *nfkc;
+	UChar	   *src;
+	UChar	   *dst;
+	int32		src_len;
+	int32		dst_len;
+	int32		out_len;
+	char	   *out;
+	bool		ascii = true;
+	bool		apostrophe = false;
+
+	for (int32 i = 0; i < len; i++)
+	{
+		if ((unsigned char) in[i] >= 0x80)
+			ascii = false;
+		else if (in[i] == '\'')
+			apostrophe = true;
+	}
+	if (ascii && !apostrophe)
+		return NULL;
+	if (ascii)
+	{
+		out = palloc(len + 1);
+		out_len = 0;
+		for (int32 i = 0; i < len; i++)
+			if (in[i] != '\'')
+				out[out_len++] = in[i];
+		out[out_len] = '\0';
+		return out;
+	}
+
+	u_strFromUTF8(NULL, 0, &src_len, in, len, &status);
+	if (status != U_BUFFER_OVERFLOW_ERROR)
+		check_icu(status, "u_strFromUTF8");
+	status = U_ZERO_ERROR;
+	src = palloc(sizeof(UChar) * (src_len + 1));
+	u_strFromUTF8(src, src_len + 1, NULL, in, len, &status);
+	check_icu(status, "u_strFromUTF8");
+
+	nfkc = unorm2_getNFKCInstance(&status);
+	check_icu(status, "unorm2_getNFKCInstance");
+	if (unorm2_quickCheck(nfkc, src, src_len, &status) == UNORM_YES)
+	{
+		dst = src;
+		dst_len = src_len;
+	}
+	else
+	{
+		status = U_ZERO_ERROR;
+		dst_len = unorm2_normalize(nfkc, src, src_len, NULL, 0, &status);
+		if (status != U_BUFFER_OVERFLOW_ERROR)
+			check_icu(status, "unorm2_normalize");
+		status = U_ZERO_ERROR;
+		dst = palloc(sizeof(UChar) * (dst_len + 1));
+		unorm2_normalize(nfkc, src, src_len, dst, dst_len + 1, &status);
+	}
+	check_icu(status, "unorm2_normalize");
+
+	out_len = recombine_and_strip(dst, dst_len);
+	if (out_len == src_len && (dst == src || memcmp(dst, src, sizeof(UChar) * src_len) == 0))
+		return NULL;
+
+	u_strToUTF8(NULL, 0, &len, dst, out_len, &status);
+	if (status != U_BUFFER_OVERFLOW_ERROR)
+		check_icu(status, "u_strToUTF8");
+	status = U_ZERO_ERROR;
+	out = palloc(len + 1);
+	u_strToUTF8(out, len + 1, NULL, dst, out_len, &status);
+	check_icu(status, "u_strToUTF8");
+	return out;
+}
+
+PG_FUNCTION_INFO_V1(icu_normalize_init);
+Datum
+icu_normalize_init(PG_FUNCTION_ARGS)
+{
+	List	   *options = (List *) PG_GETARG_POINTER(0);
+
+	if (options != NIL)
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("unrecognized icu_normalize parameter: \"%s\"",
+						((DefElem *) linitial(options))->defname)));
+	PG_RETURN_POINTER(palloc0(1));
+}
+
+PG_FUNCTION_INFO_V1(icu_normalize_lexize);
+Datum
+icu_normalize_lexize(PG_FUNCTION_ARGS)
+{
+	char	   *in = (char *) PG_GETARG_POINTER(1);
+	int32		len = PG_GETARG_INT32(2);
+	char	   *out;
+	TSLexeme   *res;
+
+	if (GetDatabaseEncoding() != PG_UTF8)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("icu_normalize requires a UTF8 database")));
+
+	out = normalize_token(in, len);
+	if (out == NULL)
+		PG_RETURN_POINTER(NULL);
+
+	res = palloc0(sizeof(TSLexeme) * 2);
+	if (*out != '\0')
+	{
+		res[0].lexeme = out;
+		res[0].flags = TSL_FILTER;
+	}
+	PG_RETURN_POINTER(res);
 }

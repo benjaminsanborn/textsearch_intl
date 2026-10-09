@@ -12,7 +12,7 @@ SELECT token FROM ts_debug('simple', '東京駅前ラーメン店');
 `icu_parser` uses ICU's word break iterator, which uses dictionaries to segment those scripts:
 
 ```sql
-CREATE EXTENSION icu_parser;
+CREATE EXTENSION icu_parser CASCADE;
 
 SELECT alias, token FROM ts_debug('icu_simple', '東京駅前ラーメン店 ร้านกาแฟ Café');
 --  ideo  | 東京
@@ -33,6 +33,7 @@ SELECT to_tsvector('icu_simple', '東京駅前ラーメン店') @@ plainto_tsque
 
 - PostgreSQL 14 or later, in a `UTF8` database
 - ICU development headers (`libicu-dev`, `libicu-devel` or Homebrew `icu4c`) and `pkg-config`
+- The `unaccent` extension from contrib, which `CREATE EXTENSION icu_parser CASCADE` installs
 
 ## Install
 
@@ -50,22 +51,41 @@ PKG_CONFIG_PATH="$(brew --prefix icu4c)/lib/pkgconfig" make PG_SYSROOT="$(xcrun 
 
 ## Usage
 
-The extension creates the parser `icu` and the configuration `icu_simple`, which maps every word token to the `simple` dictionary (lowercase, no stemming, no stop words).
+The extension creates the parser `icu`, the dictionary `icu_normalize`, and two configurations:
+
+- **`icu_search`** folds the forms people type differently: `icu_normalize`, then `unaccent`, then `simple`. Use it for searching names.
+- **`icu_simple`** maps every word token straight to `simple` (lowercase, no stemming, no stop words), keeping accents, apostrophes and character widths as written.
 
 ```sql
-CREATE INDEX places_name_icu_idx ON places USING gin (to_tsvector('icu_simple', name));
+CREATE INDEX places_name_icu_idx ON places USING gin (to_tsvector('icu_search', name));
 
 SELECT * FROM places
-WHERE to_tsvector('icu_simple', name) @@ websearch_to_tsquery('icu_simple', 'ラーメン');
+WHERE to_tsvector('icu_search', name) @@ phraseto_tsquery('icu_search', 'mcdonalds');
+-- finds McDonald's, McDonald’s and MCDONALDS
 ```
 
-Build your own configuration on the parser to add stemming, stop words or accent folding:
+Prefer `phraseto_tsquery`: when ICU splits a name into several words, `plainto_tsquery` matches them in any order.
+
+### Normalization
+
+`icu_normalize` is a filtering dictionary: it changes a token and passes it on to the next dictionary, or passes it through untouched. For each token it:
+
+- applies Unicode NFKC, so half-width katakana (`ｾﾌﾞﾝ` → `セブン`), full-width letters and digits (`ＡＢＣ１２３` → `ABC123`) and decomposed accents match their usual forms;
+- recombines the Thai `ำ` and Lao `ຳ` vowels, which NFKC splits into two characters;
+- removes apostrophes (`'` and `’`), so `McDonald's` becomes `McDonalds`.
+
+`icu_search` then strips Latin, Greek and Cyrillic accents with `unaccent` (`café` → `cafe`, `ё` → `е`) and lowercases with `simple`. `unaccent` leaves Thai tone marks and Indic vowel signs alone, which a generic "remove all combining marks" step would break. `ts_headline` still shows the original text.
+
+The dictionary works on the tokens ICU produced, so it can't join words ICU split: `7eleven` and `7-Eleven` still differ.
+
+Build your own configuration on the parser to add stemming or stop words:
 
 ```sql
-CREATE EXTENSION unaccent;
-CREATE TEXT SEARCH CONFIGURATION icu_unaccent (PARSER = icu);
-ALTER TEXT SEARCH CONFIGURATION icu_unaccent
-  ADD MAPPING FOR word, number, kana, ideo WITH unaccent, simple;
+CREATE TEXT SEARCH CONFIGURATION icu_english (PARSER = icu);
+ALTER TEXT SEARCH CONFIGURATION icu_english
+  ADD MAPPING FOR word WITH icu_normalize, unaccent, english_stem;
+ALTER TEXT SEARCH CONFIGURATION icu_english
+  ADD MAPPING FOR number, kana, ideo WITH icu_normalize, simple;
 ```
 
 ### Token types
@@ -91,7 +111,7 @@ The ids reuse the `default` parser's `word`, `blank` and `uint` ids, because `ts
 - **Segmentation depends on the ICU version.** A different ICU release can split the same text differently, the same way an ICU upgrade can change collation order. Run `REINDEX` on indexes built with this parser after PostgreSQL starts linking against a new ICU major version. Until you do, rows indexed under the old segmentation can be missed.
 - **Dictionary segmentation isn't perfect for names.** ICU's dictionaries cover ordinary vocabulary. Transliterated brand names (`星巴克`, `สตาร์บัคส์`) often split into fragments. Queries go through the same parser and usually split the same way, so `plainto_tsquery` and `phraseto_tsquery` still match, but segmentation depends on context and can differ between a name on its own and the same name inside a longer string. If you need exact substring matching in these scripts, use n-gram indexes (`pg_trgm`, `pg_bigm`).
 - **Prefix queries are unreliable for partial CJK words.** `to_tsquery('icu_simple', 'ラー:*')` segments `ラー` into `ラ <-> ー`, which doesn't match the single lexeme `ラーメン`. Prefixes that end on a word boundary work, as do Latin prefixes.
-- **No Unicode normalization.** A decomposed `é` (`e` + U+0301) and a precomposed `é` give different lexemes. If your data mixes forms, index `to_tsvector('icu_simple', normalize(name, NFC))` and query the same way.
+- **`icu_simple` doesn't normalize.** A decomposed `é` (`e` + U+0301) and a precomposed `é` give different lexemes, as do half-width and full-width forms. Use `icu_search`, or put `icu_normalize` in your own configuration.
 - **Japanese is segmented by vocabulary, not morphology.** ICU has no inflection rules, so conjugated verbs fragment: `食べました` becomes `食 / べ / ま / した`. Nouns and names, the usual search targets, segment well. For full morphological analysis, look at MeCab-based tools.
 - **Different splitting for Latin text than `default`.** ICU follows Unicode word boundary rules (UAX #29): `7-Eleven` gives `7` and `eleven`, `McDonald's` stays one token, and URLs and email addresses are not recognized as single tokens.
 

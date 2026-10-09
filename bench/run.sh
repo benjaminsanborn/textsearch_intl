@@ -33,7 +33,7 @@ done
 dropdb --if-exists "$DB"
 createdb -T template0 -E UTF8 --locale-provider=libc --lc-collate=C --lc-ctype="$CTYPE" "$DB"
 psql -X -q -v ON_ERROR_STOP=1 -d "$DB" <<SQL
-CREATE EXTENSION icu_parser;
+CREATE EXTENSION icu_parser CASCADE;
 CREATE EXTENSION pg_trgm;
 CREATE UNLOGGED TABLE titles_raw (lang text, title text);
 CREATE TABLE labels (lang text, term text, title text, label text CHECK (label IN ('match', 'over')));

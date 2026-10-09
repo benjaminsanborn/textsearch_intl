@@ -1,5 +1,5 @@
 SET client_min_messages = warning;
-CREATE EXTENSION IF NOT EXISTS icu_parser;
+CREATE EXTENSION IF NOT EXISTS icu_parser CASCADE;
 
 SELECT tokid, alias, description FROM ts_token_type('icu') ORDER BY tokid;
 
@@ -37,5 +37,5 @@ SELECT to_tsvector('moved.icu_simple', '東京駅');
 ALTER EXTENSION icu_parser SET SCHEMA public;
 DROP EXTENSION icu_parser;
 DROP SCHEMA moved;
-CREATE EXTENSION icu_parser;
+CREATE EXTENSION icu_parser CASCADE;
 SELECT to_tsvector('icu_simple', '東京駅');

@@ -1,5 +1,5 @@
 SET client_min_messages = warning;
-CREATE EXTENSION IF NOT EXISTS icu_parser;
+CREATE EXTENSION IF NOT EXISTS icu_parser CASCADE;
 
 SELECT to_tsvector('icu_simple', '');
 SELECT to_tsvector('icu_simple', ' ');
@@ -43,7 +43,7 @@ CREATE DATABASE icu_parser_latin1 ENCODING 'LATIN1' LC_COLLATE 'C' LC_CTYPE 'C' 
 \endif
 \c icu_parser_latin1
 SET client_min_messages = warning;
-CREATE EXTENSION icu_parser;
+CREATE EXTENSION icu_parser CASCADE;
 SELECT to_tsvector('icu_simple', 'abc');
 \c contrib_regression
 DROP DATABASE icu_parser_latin1;

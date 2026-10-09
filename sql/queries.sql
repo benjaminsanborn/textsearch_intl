@@ -1,5 +1,5 @@
 SET client_min_messages = warning;
-CREATE EXTENSION IF NOT EXISTS icu_parser;
+CREATE EXTENSION IF NOT EXISTS icu_parser CASCADE;
 
 CREATE TABLE names (id int, name text);
 INSERT INTO names VALUES

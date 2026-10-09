@@ -1,5 +1,5 @@
 SET client_min_messages = warning;
-CREATE EXTENSION IF NOT EXISTS icu_parser;
+CREATE EXTENSION IF NOT EXISTS icu_parser CASCADE;
 RESET client_min_messages;
 
 SELECT alias, description FROM ts_token_type('icu') ORDER BY tokid;

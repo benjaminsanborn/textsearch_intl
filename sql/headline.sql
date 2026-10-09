@@ -1,5 +1,5 @@
 SET client_min_messages = warning;
-CREATE EXTENSION IF NOT EXISTS icu_parser;
+CREATE EXTENSION IF NOT EXISTS icu_parser CASCADE;
 
 SELECT ts_headline('icu_simple', 'The best ラーメン in Tokyo', plainto_tsquery('icu_simple', 'ラーメン'));
 SELECT ts_headline('icu_simple', '東京駅前ラーメン店', plainto_tsquery('icu_simple', 'ラーメン'));

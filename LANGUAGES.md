@@ -24,16 +24,7 @@ The evidence comes from three places:
 ## Advice that applies to every language
 
 - **Query with `phraseto_tsquery`, not `plainto_tsquery`.** When ICU splits a name into pieces, a plain query requires the pieces to appear anywhere in the title, in any order. `星巴克` (Starbucks) splits into `星|巴|克`, so `plainto_tsquery` matches `克巴星餐厅`; `phraseto_tsquery` requires them adjacent and in order, and doesn't.
-- **Normalize before tokenizing, but repair Thai and Lao afterwards.** icu_parser doesn't apply Unicode normalization. NFKC makes half-width katakana (`ｾﾌﾞﾝ`), full-width Latin (`ＡＢＣ`) and decomposed accents match their usual forms. It also splits the Thai vowel `ำ` and the Lao vowel `ຳ` into two characters, after which ICU's dictionary no longer recognizes the word (`จำกัด` becomes `จํา|กัด`). Recombine them after normalizing:
-
-  ```sql
-  CREATE FUNCTION search_normalize(t text) RETURNS text
-  LANGUAGE sql IMMUTABLE PARALLEL SAFE
-  RETURN replace(replace(normalize(t, NFKC), U&'\0E4D\0E32', U&'\0E33'), U&'\0ECD\0EB2', U&'\0EB3');
-
-  CREATE INDEX ON places USING gin (to_tsvector('icu_simple', search_normalize(name)));
-  ```
-- **Strip accents with a config if your users type without them.** The `unaccent` dictionary works with icu_parser (see the README's custom configuration example).
+- **Use the `icu_search` configuration.** It applies NFKC, accent folding and apostrophe removal to each token, so half-width katakana (`ｾﾌﾞﾝ`), full-width Latin (`ＡＢＣ`), accents (`café`, `ё`) and apostrophes (`McDonald's`) match the way users type them. It keeps the Thai and Lao vowels intact, which a plain `normalize(name, NFKC)` before tokenizing would split (`จำกัด` → `จํา|กัด`).
 - **Pair it with an n-gram index for partial words.** icu_parser matches whole words only. For Korean, for names ICU doesn't know, and for prefixes of CJK words, add pg_bigm (or pg_trgm for terms of three or more characters) and OR the two conditions.
 
 ## Chinese: good
@@ -64,7 +55,7 @@ Where it falls short:
 
 - **Hiragana-only words split into syllables:** `ひらがな` → `ひ|ら|が|な`, `やきとり` → `や|き|とり`, `らーめん` → `ら|ー|めん`. Verb forms fragment the same way: `食べました` → `食|べ|ま|した`. Use phrase queries; matching across spelling variants (`らーめん` and `ラーメン`) needs a kana-folding step that icu_parser doesn't do.
 - **Unknown katakana names** can come out as fragments (`ンズ`, `ジョ`), which then match inside unrelated names. This is most of the 20% overmatch.
-- **Half-width katakana** (`ｾﾌﾞﾝｲﾚﾌﾞﾝ`) doesn't match full-width until it's normalized with NFKC.
+- **Half-width katakana** (`ｾﾌﾞﾝｲﾚﾌﾞﾝ`) only matches full-width with `icu_search`, which applies NFKC.
 - **No morphology.** ICU isn't a morphological analyzer like MeCab or Kuromoji, so it won't link inflected forms or break up every compound.
 
 ## Thai: usable, with noisy unknown words
@@ -103,7 +94,7 @@ Spaces separate words, but the article and some prepositions and conjunctions ar
 
 For English, Russian, Greek, Hindi, German, Turkish and other languages that separate words with spaces, ICU's splits match the default parser's, and tokenizing English is slightly faster (0.63 µs against 0.73 µs per title). Search results were the same within 0.5%: `starbucks` found 54,395 place names with icu_parser and 54,352 with the default parser. Differences in detail:
 
-- **Apostrophes stay inside the word:** `McDonald's` is one token, `mcdonald's`, so a search for `mcdonalds` or `mcdonald` doesn't match it. The default parser splits it into `mcdonald|s` instead. Strip apostrophes before indexing if that matters.
+- **Apostrophes stay inside the word:** `McDonald's` is one token, `mcdonald's`, so a search for `mcdonalds` or `mcdonald` doesn't match it. The default parser splits it into `mcdonald|s` instead. `icu_search` removes the apostrophe, so `mcdonalds` matches.
 - **Hyphens and ampersands split:** `7-Eleven` → `7|eleven`, `co-op` → `co|op`, `AT&T` → `at|t`.
 - **URLs and hostnames stay whole:** `www.example.com` is one token.
 - **No stemming or compound splitting.** `Kaffeehaus` doesn't match `haus`. For stemming, map `word` to a Snowball dictionary: `ALTER TEXT SEARCH CONFIGURATION my_config ALTER MAPPING FOR word WITH english_stem`.

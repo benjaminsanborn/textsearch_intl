@@ -37,3 +37,25 @@ CREATE TEXT SEARCH CONFIGURATION icu_simple (PARSER = icu);
 
 ALTER TEXT SEARCH CONFIGURATION icu_simple
   ADD MAPPING FOR word, number, kana, ideo WITH simple;
+
+CREATE FUNCTION icu_normalize_init(internal)
+RETURNS internal
+AS 'MODULE_PATHNAME'
+LANGUAGE C STRICT;
+
+CREATE FUNCTION icu_normalize_lexize(internal, internal, internal, internal)
+RETURNS internal
+AS 'MODULE_PATHNAME'
+LANGUAGE C STRICT;
+
+CREATE TEXT SEARCH TEMPLATE icu_normalize_template (
+  INIT = icu_normalize_init,
+  LEXIZE = icu_normalize_lexize
+);
+
+CREATE TEXT SEARCH DICTIONARY icu_normalize (TEMPLATE = icu_normalize_template);
+
+CREATE TEXT SEARCH CONFIGURATION icu_search (PARSER = icu);
+
+ALTER TEXT SEARCH CONFIGURATION icu_search
+  ADD MAPPING FOR word, number, kana, ideo WITH icu_normalize, unaccent, simple;

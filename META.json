@@ -2,7 +2,7 @@
   "name": "icu_parser",
   "abstract": "Text search parser that splits words with ICU word boundaries",
   "description": "A PostgreSQL text search parser backed by the ICU word break iterator, so Chinese, Japanese, Thai and other scripts written without spaces are split into words for tsvector indexing.",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "maintainer": [
     "Benjamin Currie <benjaminsanborn@gmail.com>"
   ],
@@ -10,15 +10,16 @@
   "provides": {
     "icu_parser": {
       "abstract": "Text search parser that splits words with ICU word boundaries",
-      "file": "icu_parser--1.0.sql",
+      "file": "icu_parser--1.1.sql",
       "docfile": "README.md",
-      "version": "1.0.0"
+      "version": "1.1.0"
     }
   },
   "prereqs": {
     "runtime": {
       "requires": {
-        "PostgreSQL": "14.0.0"
+        "PostgreSQL": "14.0.0",
+        "unaccent": "0"
       }
     }
   },
