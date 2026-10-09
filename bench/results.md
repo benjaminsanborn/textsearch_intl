@@ -15,26 +15,36 @@ Time to tokenize every title once, minus the time to scan the table. "vs default
 
 | Language | Titles | Avg bytes | Method | µs per title | vs default |
 |---|--:|--:|---|--:|--:|
-| en | 500,000 | 21.0 | default parser | 0.730 | 1.00× |
-| en | 500,000 | 21.0 | icu_parser | 0.631 | 0.86× |
-| en | 500,000 | 21.0 | pg_trgm | 1.107 | 1.52× |
-| en | 500,000 | 21.0 | pg_bigm | 0.908 | 1.24× |
-| zh | 500,000 | 16.9 | default parser | 0.434 | 1.00× |
-| zh | 500,000 | 16.9 | icu_parser | 1.438 | 3.31× |
-| zh | 500,000 | 16.9 | pg_trgm | 0.762 | 1.76× |
-| zh | 500,000 | 16.9 | pg_bigm | 0.484 | 1.11× |
-| ja | 500,000 | 22.2 | default parser | 0.569 | 1.00× |
-| ja | 500,000 | 22.2 | icu_parser | 1.718 | 3.02× |
-| ja | 500,000 | 22.2 | pg_trgm | 1.011 | 1.78× |
-| ja | 500,000 | 22.2 | pg_bigm | 0.659 | 1.16× |
-| ko | 500,000 | 19.1 | default parser | 0.547 | 1.00× |
-| ko | 500,000 | 19.1 | icu_parser | 0.667 | 1.22× |
-| ko | 500,000 | 19.1 | pg_trgm | 0.893 | 1.63× |
-| ko | 500,000 | 19.1 | pg_bigm | 0.580 | 1.06× |
-| th | 366,332 | 45.9 | default parser | 1.083 | 1.00× |
-| th | 366,332 | 45.9 | icu_parser | 1.681 | 1.55× |
-| th | 366,332 | 45.9 | pg_trgm | 2.184 | 2.02× |
-| th | 366,332 | 45.9 | pg_bigm | 1.432 | 1.32× |
+| en | 500,000 | 21.0 | default parser | 0.836 | 1.00× |
+| en | 500,000 | 21.0 | intl_simple | 0.715 | 0.86× |
+| en | 500,000 | 21.0 | intl_search | 0.908 | 1.09× |
+| en | 500,000 | 21.0 | intl_search_ngram | 0.978 | 1.17× |
+| en | 500,000 | 21.0 | pg_trgm | 1.412 | 1.69× |
+| en | 500,000 | 21.0 | pg_bigm | 1.130 | 1.35× |
+| zh | 500,000 | 16.9 | default parser | 0.533 | 1.00× |
+| zh | 500,000 | 16.9 | intl_simple | 1.801 | 3.38× |
+| zh | 500,000 | 16.9 | intl_search | 2.113 | 3.97× |
+| zh | 500,000 | 16.9 | intl_search_ngram | 2.165 | 4.07× |
+| zh | 500,000 | 16.9 | pg_trgm | 0.872 | 1.64× |
+| zh | 500,000 | 16.9 | pg_bigm | 0.551 | 1.04× |
+| ja | 500,000 | 22.2 | default parser | 0.667 | 1.00× |
+| ja | 500,000 | 22.2 | intl_simple | 2.123 | 3.18× |
+| ja | 500,000 | 22.2 | intl_search | 2.479 | 3.72× |
+| ja | 500,000 | 22.2 | intl_search_ngram | 4.134 | 6.20× |
+| ja | 500,000 | 22.2 | pg_trgm | 1.777 | 2.67× |
+| ja | 500,000 | 22.2 | pg_bigm | 1.172 | 1.76× |
+| ko | 500,000 | 19.1 | default parser | 0.631 | 1.00× |
+| ko | 500,000 | 19.1 | intl_simple | 0.731 | 1.16× |
+| ko | 500,000 | 19.1 | intl_search | 0.922 | 1.46× |
+| ko | 500,000 | 19.1 | intl_search_ngram | 1.753 | 2.78× |
+| ko | 500,000 | 19.1 | pg_trgm | 1.571 | 2.49× |
+| ko | 500,000 | 19.1 | pg_bigm | 1.067 | 1.69× |
+| th | 366,332 | 45.9 | default parser | 1.819 | 1.00× |
+| th | 366,332 | 45.9 | intl_simple | 1.882 | 1.03× |
+| th | 366,332 | 45.9 | intl_search | 2.173 | 1.19× |
+| th | 366,332 | 45.9 | intl_search_ngram | 5.570 | 3.06× |
+| th | 366,332 | 45.9 | pg_trgm | 5.713 | 3.14× |
+| th | 366,332 | 45.9 | pg_bigm | 3.720 | 2.05× |
 
 ## GIN index build
 
@@ -42,25 +52,35 @@ Single-process `CREATE INDEX` with `maintenance_work_mem = 1GB`.
 
 | Language | Method | Build seconds | Index size MB |
 |---|---|--:|--:|
-| en | default parser | 1.4 | 25.5 |
-| en | icu_parser | 1.3 | 24.0 |
-| en | pg_trgm | 1.7 | 29.5 |
-| en | pg_bigm | 1.7 | 20.4 |
-| zh | default parser | 1.2 | 38.2 |
-| zh | icu_parser | 1.5 | 14.3 |
-| zh | pg_trgm | 2.2 | 72.0 |
-| zh | pg_bigm | 2.1 | 41.8 |
-| ja | default parser | 1.3 | 39.6 |
-| ja | icu_parser | 1.7 | 18.6 |
-| ja | pg_trgm | 2.3 | 63.7 |
-| ja | pg_bigm | 2.0 | 33.9 |
-| ko | default parser | 1.2 | 30.1 |
-| ko | icu_parser | 1.3 | 28.8 |
-| ko | pg_trgm | 1.8 | 48.9 |
-| ko | pg_bigm | 1.5 | 24.3 |
-| th | default parser | 1.2 | 37.6 |
-| th | icu_parser | 1.3 | 13.7 |
-| th | pg_trgm | 1.6 | 23.4 |
+| en | default parser | 3.6 | 25.5 |
+| en | intl_simple | 3.2 | 24.0 |
+| en | intl_search | 3.5 | 23.4 |
+| en | intl_search_ngram | 3.6 | 23.5 |
+| en | pg_trgm | 4.6 | 29.5 |
+| en | pg_bigm | 4.2 | 20.4 |
+| zh | default parser | 3.4 | 38.2 |
+| zh | intl_simple | 4.1 | 14.3 |
+| zh | intl_search | 4.7 | 14.3 |
+| zh | intl_search_ngram | 5.8 | 18.2 |
+| zh | pg_trgm | 7.0 | 72.0 |
+| zh | pg_bigm | 6.8 | 41.8 |
+| ja | default parser | 3.6 | 39.6 |
+| ja | intl_simple | 5.5 | 18.6 |
+| ja | intl_search | 4.0 | 18.6 |
+| ja | intl_search_ngram | 4.2 | 20.7 |
+| ja | pg_trgm | 4.0 | 63.7 |
+| ja | pg_bigm | 4.6 | 33.9 |
+| ko | default parser | 2.7 | 30.1 |
+| ko | intl_simple | 2.7 | 28.8 |
+| ko | intl_search | 2.5 | 28.8 |
+| ko | intl_search_ngram | 4.1 | 24.6 |
+| ko | pg_trgm | 3.3 | 48.9 |
+| ko | pg_bigm | 3.0 | 24.3 |
+| th | default parser | 1.9 | 37.6 |
+| th | intl_simple | 1.6 | 13.7 |
+| th | intl_search | 1.5 | 13.7 |
+| th | intl_search_ngram | 1.6 | 13.7 |
+| th | pg_trgm | 1.8 | 23.4 |
 | th | pg_bigm | 1.6 | 18.8 |
 
 ## Word queries
@@ -69,26 +89,36 @@ Each language runs its query terms one at a time as `count(*)`, through each met
 
 | Language | Terms | Method | Queries using the index | Avg ms per query | Hits | Recall | Overmatch |
 |---|--:|---|--:|--:|--:|--:|--:|
-| en | 200 | default parser | 200 | 0.167 | 123,231 | — | — |
-| en | 200 | icu_parser | 200 | 0.163 | 119,253 | — | — |
-| en | 200 | pg_trgm | 183 | 2.564 | 659,396 | — | — |
-| en | 200 | pg_bigm | 200 | 1.698 | 659,396 | — | — |
-| zh | 200 | default parser | 200 | 0.027 | 5,396 | 10.3% | 0.0% |
-| zh | 200 | icu_parser | 200 | 0.106 | 68,070 | 92.6% | 15.6% |
-| zh | 200 | pg_trgm | 22 | 21.677 | 79,536 | 100.0% | 18.4% |
-| zh | 200 | pg_bigm | 200 | 0.105 | 79,536 | 100.0% | 18.4% |
-| ja | 200 | default parser | 200 | 0.035 | 7,373 | 7.0% | 0.0% |
-| ja | 200 | icu_parser | 200 | 0.128 | 86,443 | 86.1% | 19.5% |
-| ja | 200 | pg_trgm | 57 | 18.650 | 175,927 | 100.0% | 54.0% |
-| ja | 200 | pg_bigm | 200 | 0.245 | 175,927 | 100.0% | 54.0% |
-| ko | 200 | default parser | 200 | 0.064 | 35,053 | 46.7% | 0.0% |
-| ko | 200 | icu_parser | 200 | 0.067 | 36,678 | 48.2% | 1.1% |
-| ko | 200 | pg_trgm | 91 | 16.965 | 93,655 | 100.0% | 22.0% |
-| ko | 200 | pg_bigm | 200 | 0.135 | 93,655 | 100.0% | 22.0% |
-| th | 200 | default parser | 200 | 0.037 | 6,997 | 5.3% | 0.0% |
-| th | 200 | icu_parser | 200 | 0.279 | 215,162 | 78.9% | 43.8% |
-| th | 200 | pg_trgm | 133 | 16.912 | 620,044 | 100.0% | 77.2% |
-| th | 200 | pg_bigm | 200 | 0.967 | 620,044 | 100.0% | 77.2% |
+| en | 200 | default parser | 200 | 0.418 | 123,231 | — | — |
+| en | 200 | intl_simple | 200 | 0.448 | 119,253 | — | — |
+| en | 200 | intl_search | 200 | 0.325 | 119,679 | — | — |
+| en | 200 | intl_search_ngram | 200 | 0.440 | 119,679 | — | — |
+| en | 200 | pg_trgm | 183 | 4.832 | 659,396 | — | — |
+| en | 200 | pg_bigm | 200 | 2.191 | 659,396 | — | — |
+| zh | 200 | default parser | 200 | 0.040 | 5,396 | 10.3% | 0.0% |
+| zh | 200 | intl_simple | 200 | 0.169 | 68,070 | 92.6% | 15.6% |
+| zh | 200 | intl_search | 200 | 0.177 | 68,070 | 92.6% | 15.6% |
+| zh | 200 | intl_search_ngram | 200 | 0.270 | 78,369 | 99.0% | 17.6% |
+| zh | 200 | pg_trgm | 22 | 41.814 | 79,536 | 100.0% | 18.4% |
+| zh | 200 | pg_bigm | 200 | 0.236 | 79,536 | 100.0% | 18.4% |
+| ja | 200 | default parser | 200 | 0.082 | 7,373 | 7.0% | 0.0% |
+| ja | 200 | intl_simple | 200 | 0.379 | 86,443 | 86.1% | 19.5% |
+| ja | 200 | intl_search | 200 | 0.276 | 86,443 | 86.1% | 19.5% |
+| ja | 200 | intl_search_ngram | 200 | 0.860 | 172,426 | 98.3% | 53.1% |
+| ja | 200 | pg_trgm | 57 | 20.018 | 175,927 | 100.0% | 54.0% |
+| ja | 200 | pg_bigm | 200 | 0.317 | 175,927 | 100.0% | 54.0% |
+| ko | 200 | default parser | 200 | 0.098 | 35,053 | 46.7% | 0.0% |
+| ko | 200 | intl_simple | 200 | 0.092 | 36,678 | 48.2% | 1.1% |
+| ko | 200 | intl_search | 200 | 0.084 | 36,678 | 48.2% | 1.1% |
+| ko | 200 | intl_search_ngram | 200 | 0.401 | 93,757 | 100.0% | 22.0% |
+| ko | 200 | pg_trgm | 91 | 19.354 | 93,655 | 100.0% | 22.0% |
+| ko | 200 | pg_bigm | 200 | 0.232 | 93,655 | 100.0% | 22.0% |
+| th | 200 | default parser | 200 | 0.055 | 6,997 | 5.3% | 0.0% |
+| th | 200 | intl_simple | 200 | 0.645 | 215,162 | 78.9% | 43.8% |
+| th | 200 | intl_search | 200 | 0.613 | 215,162 | 78.9% | 43.8% |
+| th | 200 | intl_search_ngram | 200 | 0.541 | 215,162 | 78.9% | 43.8% |
+| th | 200 | pg_trgm | 133 | 30.177 | 620,044 | 100.0% | 77.2% |
+| th | 200 | pg_bigm | 200 | 1.204 | 620,044 | 100.0% | 77.2% |
 
 ## Labeled sample
 

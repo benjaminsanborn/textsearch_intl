@@ -2,7 +2,7 @@
 set -euo pipefail
 
 BENCH_DIR="$(cd "$(dirname "$0")" && pwd)"
-DB="${BENCH_DB:-icu_parser_bench}"
+DB="${BENCH_DB:-textsearch_intl_bench}"
 DUMP="${BENCH_DUMP:-20260901}"
 SAMPLE="${BENCH_SAMPLE:-500000}"
 RUNS="${BENCH_RUNS:-5}"
@@ -33,7 +33,7 @@ done
 dropdb --if-exists "$DB"
 createdb -T template0 -E UTF8 --locale-provider=libc --lc-collate=C --lc-ctype="$CTYPE" "$DB"
 psql -X -q -v ON_ERROR_STOP=1 -d "$DB" <<SQL
-CREATE EXTENSION icu_parser CASCADE;
+CREATE EXTENSION textsearch_intl CASCADE;
 CREATE EXTENSION pg_trgm;
 CREATE UNLOGGED TABLE titles_raw (lang text, title text);
 CREATE TABLE labels (lang text, term text, title text, label text CHECK (label IN ('match', 'over')));
@@ -62,7 +62,7 @@ psql -X -q -v ON_ERROR_STOP=1 -d "$DB" \
   echo "| | |"
   echo "|---|---|"
   echo "| PostgreSQL | $(psql -X -At -d "$DB" -c "SELECT version()") |"
-  echo "| ICU | $(psql -X -At -d "$DB" -c "SELECT icu_parser_icu_version()") |"
+  echo "| ICU | $(psql -X -At -d "$DB" -c "SELECT intl_icu_version()") |"
   echo "| CPU | $( (sysctl -n machdep.cpu.brand_string 2>/dev/null || grep -m1 'model name' /proc/cpuinfo | cut -d: -f2) | sed 's/^ *//') |"
   echo "| Corpus | Wikipedia article titles, dump $DUMP, $SAMPLE titles per language |"
   echo "| Runs | median of $RUNS after one warm-up run, one backend, no parallel workers, JIT off |"

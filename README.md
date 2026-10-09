@@ -1,6 +1,11 @@
-# icu_parser
+# textsearch_intl
 
-A PostgreSQL text search parser that splits text into words with ICU word boundaries.
+Multilingual full text search for PostgreSQL, built for names and other short text in any script. It provides:
+
+- **the `intl` parser,** which splits text into words with ICU word boundaries, including Chinese, Japanese, Thai, Khmer, Lao and Burmese, which don't put spaces between words;
+- **the `intl_normalize` dictionary,** which folds character widths, decomposed accents and apostrophes;
+- **the `intl_ngram` dictionary,** which lets a search match words inside long Korean, Chinese and Japanese tokens;
+- **three ready-made configurations** that combine them.
 
 PostgreSQL's built-in `default` parser only splits on spaces and punctuation, so text in scripts written without spaces between words comes out as a single token. Chinese, Japanese, Thai, Khmer, Lao and Burmese all have this problem:
 
@@ -9,12 +14,12 @@ SELECT token FROM ts_debug('simple', '東京駅前ラーメン店');
 --  東京駅前ラーメン店
 ```
 
-`icu_parser` uses ICU's word break iterator, which uses dictionaries to segment those scripts:
+The `intl` parser uses ICU's word break iterator, which uses dictionaries to segment those scripts:
 
 ```sql
-CREATE EXTENSION icu_parser CASCADE;
+CREATE EXTENSION textsearch_intl CASCADE;
 
-SELECT alias, token FROM ts_debug('icu_simple', '東京駅前ラーメン店 ร้านกาแฟ Café');
+SELECT alias, token FROM ts_debug('intl_simple', '東京駅前ラーメン店 ร้านกาแฟ Café');
 --  ideo  | 東京
 --  ideo  | 駅前
 --  ideo  | ラーメン
@@ -25,7 +30,7 @@ SELECT alias, token FROM ts_debug('icu_simple', '東京駅前ラーメン店 ร
 --  blank |
 --  word  | Café
 
-SELECT to_tsvector('icu_simple', '東京駅前ラーメン店') @@ plainto_tsquery('icu_simple', 'ラーメン');
+SELECT to_tsvector('intl_simple', '東京駅前ラーメン店') @@ plainto_tsquery('intl_simple', 'ラーメン');
 --  t
 ```
 
@@ -33,7 +38,7 @@ SELECT to_tsvector('icu_simple', '東京駅前ラーメン店') @@ plainto_tsque
 
 - PostgreSQL 14 or later, in a `UTF8` database
 - ICU development headers (`libicu-dev`, `libicu-devel` or Homebrew `icu4c`) and `pkg-config`
-- The `unaccent` extension from contrib, which `CREATE EXTENSION icu_parser CASCADE` installs
+- The `unaccent` extension from contrib, which `CREATE EXTENSION textsearch_intl CASCADE` installs
 
 ## Install
 
@@ -51,41 +56,61 @@ PKG_CONFIG_PATH="$(brew --prefix icu4c)/lib/pkgconfig" make PG_SYSROOT="$(xcrun 
 
 ## Usage
 
-The extension creates the parser `icu`, the dictionary `icu_normalize`, and two configurations:
+The extension creates the parser `intl`, the dictionaries `intl_normalize` and `intl_ngram`, and three configurations:
 
-- **`icu_search`** folds the forms people type differently: `icu_normalize`, then `unaccent`, then `simple`. Use it for searching names.
-- **`icu_simple`** maps every word token straight to `simple` (lowercase, no stemming, no stop words), keeping accents, apostrophes and character widths as written.
+| Configuration | Dictionaries for each word | Use it for |
+|---|---|---|
+| `intl_search_ngram` | `intl_normalize`, `intl_ngram`, `unaccent`, `simple` | Searching names in any language, including Korean and words inside CJK compounds |
+| `intl_search` | `intl_normalize`, `unaccent`, `simple` | Whole-word search; the smallest index, and no matches inside longer Korean or CJK words |
+| `intl_simple` | `simple` | Words exactly as written, keeping accents, apostrophes and character widths |
 
 ```sql
-CREATE INDEX places_name_icu_idx ON places USING gin (to_tsvector('icu_search', name));
+CREATE INDEX places_name_intl_idx ON places USING gin (to_tsvector('intl_search_ngram', name));
 
 SELECT * FROM places
-WHERE to_tsvector('icu_search', name) @@ phraseto_tsquery('icu_search', 'mcdonalds');
+WHERE to_tsvector('intl_search_ngram', name) @@ phraseto_tsquery('intl_search_ngram', 'mcdonalds');
 -- finds McDonald's, McDonald’s and MCDONALDS
+
+SELECT * FROM places
+WHERE to_tsvector('intl_search_ngram', name) @@ phraseto_tsquery('intl_search_ngram', '편의점');
+-- finds 행복한편의점 and CU편의점 as well as 편의점
 ```
 
 Prefer `phraseto_tsquery`: when ICU splits a name into several words, `plainto_tsquery` matches them in any order.
 
 ### Normalization
 
-`icu_normalize` is a filtering dictionary: it changes a token and passes it on to the next dictionary, or passes it through untouched. For each token it:
+`intl_normalize` is a filtering dictionary: it changes a token and passes it on to the next dictionary, or passes it through untouched. For each token it:
 
 - applies Unicode NFKC, so half-width katakana (`ｾﾌﾞﾝ` → `セブン`), full-width letters and digits (`ＡＢＣ１２３` → `ABC123`) and decomposed accents match their usual forms;
 - recombines the Thai `ำ` and Lao `ຳ` vowels, which NFKC splits into two characters;
 - removes apostrophes (`'` and `’`), so `McDonald's` becomes `McDonalds`.
 
-`icu_search` then strips Latin, Greek and Cyrillic accents with `unaccent` (`café` → `cafe`, `ё` → `е`) and lowercases with `simple`. `unaccent` leaves Thai tone marks and Indic vowel signs alone, which a generic "remove all combining marks" step would break. `ts_headline` still shows the original text.
+`intl_search` then strips Latin, Greek and Cyrillic accents with `unaccent` (`café` → `cafe`, `ё` → `е`) and lowercases with `simple`. `unaccent` leaves Thai tone marks and Indic vowel signs alone, which a generic "remove all combining marks" step would break. `ts_headline` still shows the original text.
 
 The dictionary works on the tokens ICU produced, so it can't join words ICU split: `7eleven` and `7-Eleven` still differ.
+
+### Matching inside Korean and CJK words
+
+ICU keeps some long runs as a single token: Korean puts particles and branch names directly onto a word (`서울의`, `스타벅스안양평촌점`), and ICU's Chinese and Japanese dictionaries keep compounds whole (`中村公園店`, `駅前`). A whole-word search for `스타벅스`, `公園` or `駅` misses those.
+
+For tokens made entirely of Han, kana or Hangul, `intl_ngram` indexes every character and every pair of adjacent characters, all at the token's position. A query goes through the same expansion, and `to_tsquery` ANDs lexemes that share a position:
+
+```sql
+SELECT phraseto_tsquery('intl_search_ngram', '스타벅스 안양');
+--  ( '스' & '타' & '벅' & '스' & '스타' & '타벅' & '벅스' ) <-> ( '안' & '양' & '안양' )
+```
+
+So inside a single token, a search matches the way `LIKE '%…%'` does, and phrase operators still enforce word order between tokens. ICU's word boundaries still apply: `京都` doesn't match `東京|都`. The price is overmatch inside a token, the same kind substring search has everywhere: `스타벅스` also matches `파스타벅스` (a pasta restaurant), and `主教` (bishop) matches `天主教` (Catholicism). Pieces only need to appear somewhere in the token, not necessarily adjacent, so a long token can occasionally match a query whose characters it contains out of order. Tokens in other scripts pass through unchanged.
 
 Build your own configuration on the parser to add stemming or stop words:
 
 ```sql
-CREATE TEXT SEARCH CONFIGURATION icu_english (PARSER = icu);
-ALTER TEXT SEARCH CONFIGURATION icu_english
-  ADD MAPPING FOR word WITH icu_normalize, unaccent, english_stem;
-ALTER TEXT SEARCH CONFIGURATION icu_english
-  ADD MAPPING FOR number, kana, ideo WITH icu_normalize, simple;
+CREATE TEXT SEARCH CONFIGURATION intl_english (PARSER = intl);
+ALTER TEXT SEARCH CONFIGURATION intl_english
+  ADD MAPPING FOR word WITH intl_normalize, unaccent, english_stem;
+ALTER TEXT SEARCH CONFIGURATION intl_english
+  ADD MAPPING FOR number, kana, ideo WITH intl_normalize, simple;
 ```
 
 ### Token types
@@ -104,14 +129,14 @@ The ids reuse the `default` parser's `word`, `blank` and `uint` ids, because `ts
 
 ### ICU version
 
-`icu_parser_icu_version()` returns the version of the ICU library the server process loaded, for example `78.3`. Record it next to your indexes, since a change means they need a `REINDEX` (see below).
+`intl_icu_version()` returns the version of the ICU library the server process loaded, for example `78.3`. Record it next to your indexes, since a change means they need a `REINDEX` (see below).
 
 ## Caveats
 
 - **Segmentation depends on the ICU version.** A different ICU release can split the same text differently, the same way an ICU upgrade can change collation order. Run `REINDEX` on indexes built with this parser after PostgreSQL starts linking against a new ICU major version. Until you do, rows indexed under the old segmentation can be missed.
 - **Dictionary segmentation isn't perfect for names.** ICU's dictionaries cover ordinary vocabulary. Transliterated brand names (`星巴克`, `สตาร์บัคส์`) often split into fragments. Queries go through the same parser and usually split the same way, so `plainto_tsquery` and `phraseto_tsquery` still match, but segmentation depends on context and can differ between a name on its own and the same name inside a longer string. If you need exact substring matching in these scripts, use n-gram indexes (`pg_trgm`, `pg_bigm`).
-- **Prefix queries are unreliable for partial CJK words.** `to_tsquery('icu_simple', 'ラー:*')` segments `ラー` into `ラ <-> ー`, which doesn't match the single lexeme `ラーメン`. Prefixes that end on a word boundary work, as do Latin prefixes.
-- **`icu_simple` doesn't normalize.** A decomposed `é` (`e` + U+0301) and a precomposed `é` give different lexemes, as do half-width and full-width forms. Use `icu_search`, or put `icu_normalize` in your own configuration.
+- **Prefix queries are unreliable for partial CJK words.** `to_tsquery('intl_simple', 'ラー:*')` segments `ラー` into `ラ <-> ー`, which doesn't match the single lexeme `ラーメン`. Prefixes that end on a word boundary work, as do Latin prefixes.
+- **`intl_simple` doesn't normalize.** A decomposed `é` (`e` + U+0301) and a precomposed `é` give different lexemes, as do half-width and full-width forms. Use `intl_search`, or put `intl_normalize` in your own configuration.
 - **Japanese is segmented by vocabulary, not morphology.** ICU has no inflection rules, so conjugated verbs fragment: `食べました` becomes `食 / べ / ま / した`. Nouns and names, the usual search targets, segment well. For full morphological analysis, look at MeCab-based tools.
 - **Different splitting for Latin text than `default`.** ICU follows Unicode word boundary rules (UAX #29): `7-Eleven` gives `7` and `eleven`, `McDonald's` stays one token, and URLs and email addresses are not recognized as single tokens.
 
@@ -121,7 +146,7 @@ Measured on Wikipedia article titles, which are short, name-like strings: 500,00
 
 Time to tokenize one title, net of the table scan:
 
-| | default parser | icu_parser | pg_trgm | pg_bigm |
+| | default parser | textsearch_intl | pg_trgm | pg_bigm |
 |---|--:|--:|--:|--:|
 | English | 0.72 µs | 0.61 µs | 1.09 µs | 0.90 µs |
 | Chinese | 0.43 µs | 1.42 µs | 0.76 µs | 0.48 µs |
@@ -131,7 +156,7 @@ Time to tokenize one title, net of the table scan:
 
 GIN index size:
 
-| | default parser | icu_parser | pg_trgm | pg_bigm |
+| | default parser | textsearch_intl | pg_trgm | pg_bigm |
 |---|--:|--:|--:|--:|
 | English | 25.5 MB | 24.0 MB | 29.5 MB | 20.4 MB |
 | Chinese | 38.2 MB | 14.3 MB | 72.0 MB | 41.8 MB |
@@ -139,11 +164,11 @@ GIN index size:
 | Korean | 30.1 MB | 28.8 MB | 48.9 MB | 24.3 MB |
 | Thai | 37.6 MB | 13.7 MB | 23.4 MB | 18.8 MB |
 
-[LANGUAGES.md](LANGUAGES.md) reports, language by language, where icu_parser works well and where it falls short.
+[LANGUAGES.md](LANGUAGES.md) reports, language by language, where textsearch_intl works well and where it falls short.
 
-200 single-word queries per language, each a word that icu_parser produced from a held-out set of titles, written in the language's own script. Recall and overmatch are measured on 250 term/title pairs per language, drawn at random from all titles that contain a query term as a substring, and labeled in [bench/labels.csv](bench/labels.csv) as a real word match or an overmatch (first pass by Claude, spot-checked; corrections welcome) (see [the labeling rule](bench/results.md#labeled-sample)):
+200 single-word queries per language, each a word that textsearch_intl produced from a held-out set of titles, written in the language's own script. Recall and overmatch are measured on 250 term/title pairs per language, drawn at random from all titles that contain a query term as a substring, and labeled in [bench/labels.csv](bench/labels.csv) as a real word match or an overmatch (first pass by Claude, spot-checked; corrections welcome) (see [the labeling rule](bench/results.md#labeled-sample)):
 
-| | default parser | icu_parser | pg_trgm | pg_bigm |
+| | default parser | textsearch_intl | pg_trgm | pg_bigm |
 |---|--:|--:|--:|--:|
 | Chinese | 0.03 ms, 10% recall | 0.11 ms, 93% recall, 16% overmatch | 21.7 ms, 100% recall, 18% overmatch | 0.11 ms, 100% recall, 18% overmatch |
 | Japanese | 0.04 ms, 7% recall | 0.13 ms, 86% recall, 20% overmatch | 18.7 ms, 100% recall, 54% overmatch | 0.25 ms, 100% recall, 54% overmatch |
@@ -155,14 +180,14 @@ The default parser has 0% overmatch in every language. Recall rests on 204 real 
 What this shows:
 
 - **The default parser can't find words in unspaced scripts.** It finds 5–10% of real Chinese, Japanese and Thai matches, only where the word happens to be the whole run between spaces or punctuation.
-- **icu_parser finds most real matches in Chinese and Japanese.** It finds 93% in Chinese and 86% in Japanese, with far less overmatch than substring search in Japanese and Thai. Most of what it misses is the term inside a dictionary compound: a search for `機場` (airport) doesn't find `國際機場` (international airport), because ICU keeps the compound as one word.
-- **Korean gains nothing from icu_parser.** Words are already separated by spaces, but particles and suffixes attach to nouns (`서울은`, `스타벅스커피`), and neither tokenizer splits them off. For Korean, use n-grams.
-- **ICU breaks up names it doesn't know.** Unfamiliar transliterated names come out as fragments that are real tokens (`อง`, `ซ์` in Thai; `ンズ`, `ジョ` in Japanese). Those fragments match inside unrelated names, which is where icu_parser's Thai and Japanese overmatch comes from. It also biases this benchmark: the query terms are drawn from icu_parser's own output, so they include such fragments, which nobody would search for.
+- **textsearch_intl finds most real matches in Chinese and Japanese.** It finds 93% in Chinese and 86% in Japanese, with far less overmatch than substring search in Japanese and Thai. Most of what it misses is the term inside a dictionary compound: a search for `機場` (airport) doesn't find `國際機場` (international airport), because ICU keeps the compound as one word.
+- **Korean gains nothing from textsearch_intl.** Words are already separated by spaces, but particles and suffixes attach to nouns (`서울은`, `스타벅스커피`), and neither tokenizer splits them off. For Korean, use n-grams.
+- **ICU breaks up names it doesn't know.** Unfamiliar transliterated names come out as fragments that are real tokens (`อง`, `ซ์` in Thai; `ンズ`, `ジョ` in Japanese). Those fragments match inside unrelated names, which is where textsearch_intl's Thai and Japanese overmatch comes from. It also biases this benchmark: the query terms are drawn from textsearch_intl's own output, so they include such fragments, which nobody would search for.
 - **The n-gram methods return every substring.** They score 100% recall by definition, and the overmatch column shows what that costs.
 - **pg_trgm can't use its index for one- and two-character terms**, which most CJK words are. It used the index for only 22 of 200 Chinese queries, and the rest scanned the table. pg_bigm gives the same results at index speed.
-- **Cost:** icu_parser takes about 3× the default parser's time to tokenize Chinese and Japanese, 1.5× for Thai, and about the same for Korean and English. That's still under 2 µs per title, and its index is the smallest for Chinese, Japanese and Thai.
+- **Cost:** textsearch_intl takes about 3× the default parser's time to tokenize Chinese and Japanese, 1.5× for Thai, and about the same for Korean and English. That's still under 2 µs per title, and its index is the smallest for Chinese, Japanese and Thai.
 
-Reproduce with `./bench/run.sh` (needs `curl`, `psql`, pg_trgm and optionally pg_bigm). It downloads the title dumps into `bench/data/`, scores every method against `bench/labels.csv`, and writes `bench/results.md`. To label a fresh sample, for example after changing the dump or the term rules, run `psql -d icu_parser_bench -v per_lang=250 -f bench/pairs.sql > pairs.csv` after a run, add a `label` column, and save it as `bench/labels.csv`. `BENCH_SAMPLE`, `BENCH_RUNS`, `BENCH_LANGS` and `BENCH_DUMP` change the sample size, repetitions, languages and dump date. `LC_CTYPE` must be a UTF-8 locale, or pg_trgm treats every CJK and Thai character as a separator; the script picks `C.UTF-8` when it exists.
+Reproduce with `./bench/run.sh` (needs `curl`, `psql`, pg_trgm and optionally pg_bigm). It downloads the title dumps into `bench/data/`, scores every method against `bench/labels.csv`, and writes `bench/results.md`. To label a fresh sample, for example after changing the dump or the term rules, run `psql -d textsearch_intl_bench -v per_lang=250 -f bench/pairs.sql > pairs.csv` after a run, add a `label` column, and save it as `bench/labels.csv`. `BENCH_SAMPLE`, `BENCH_RUNS`, `BENCH_LANGS` and `BENCH_DUMP` change the sample size, repetitions, languages and dump date. `LC_CTYPE` must be a UTF-8 locale, or pg_trgm treats every CJK and Thai character as a separator; the script picks `C.UTF-8` when it exists.
 
 ## Tests
 

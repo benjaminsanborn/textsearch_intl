@@ -1,18 +1,18 @@
 {
-  "name": "icu_parser",
-  "abstract": "Text search parser that splits words with ICU word boundaries",
-  "description": "A PostgreSQL text search parser backed by the ICU word break iterator, so Chinese, Japanese, Thai and other scripts written without spaces are split into words for tsvector indexing.",
-  "version": "1.1.0",
+  "name": "textsearch_intl",
+  "abstract": "Multilingual full text search: ICU word segmentation, normalization and n-gram matching",
+  "description": "A PostgreSQL text search parser, dictionaries and configurations for names and short text in any script. ICU word boundaries split Chinese, Japanese, Thai and other unspaced scripts into words; a normalizing dictionary folds character widths, accents and apostrophes; an n-gram dictionary matches words inside Korean and CJK compounds.",
+  "version": "1.0.0",
   "maintainer": [
     "Benjamin Currie <benjaminsanborn@gmail.com>"
   ],
   "license": "postgresql",
   "provides": {
-    "icu_parser": {
-      "abstract": "Text search parser that splits words with ICU word boundaries",
-      "file": "icu_parser--1.1.sql",
+    "textsearch_intl": {
+      "abstract": "Multilingual full text search: ICU word segmentation, normalization and n-gram matching",
+      "file": "textsearch_intl--1.0.sql",
       "docfile": "README.md",
-      "version": "1.1.0"
+      "version": "1.0.0"
     }
   },
   "prereqs": {
@@ -24,26 +24,30 @@
     }
   },
   "tags": [
-    "text search",
-    "tsvector",
-    "icu",
     "cjk",
+    "full text search",
+    "icu",
+    "korean",
+    "multilingual",
+    "ngram",
+    "normalization",
+    "text search",
     "thai",
     "tokenizer",
-    "full text search"
+    "tsvector"
   ],
   "meta-spec": {
     "version": "1.0.0",
     "url": "https://pgxn.org/meta/spec.txt"
   },
   "resources": {
-    "homepage": "https://github.com/benjaminsanborn/icu_parser",
+    "homepage": "https://github.com/benjaminsanborn/textsearch_intl",
     "bugtracker": {
-      "web": "https://github.com/benjaminsanborn/icu_parser/issues"
+      "web": "https://github.com/benjaminsanborn/textsearch_intl/issues"
     },
     "repository": {
-      "url": "https://github.com/benjaminsanborn/icu_parser.git",
-      "web": "https://github.com/benjaminsanborn/icu_parser",
+      "url": "https://github.com/benjaminsanborn/textsearch_intl.git",
+      "web": "https://github.com/benjaminsanborn/textsearch_intl",
       "type": "git"
     }
   }

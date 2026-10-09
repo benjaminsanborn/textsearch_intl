@@ -1,6 +1,6 @@
 -- Samples term/title pairs where the title contains the term as a substring, for labeling into bench/labels.csv.
 -- Run after bench/run.sh, against its database:
---   psql -X -q -d icu_parser_bench -v per_lang=250 -f bench/pairs.sql > bench/pairs.csv
+--   psql -X -q -d textsearch_intl_bench -v per_lang=250 -f bench/pairs.sql > bench/pairs.csv
 CREATE TEMP TABLE pairs (lang text, term text, title text);
 
 SELECT format('INSERT INTO pairs SELECT %L, t.term, d.title FROM terms t JOIN docs_%s d ON strpos(d.title, t.term) > 0 WHERE t.lang = %L',

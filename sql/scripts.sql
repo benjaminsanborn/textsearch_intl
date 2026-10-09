@@ -1,11 +1,11 @@
 SET client_min_messages = warning;
-CREATE EXTENSION IF NOT EXISTS icu_parser CASCADE;
+CREATE EXTENSION IF NOT EXISTS textsearch_intl CASCADE;
 
 CREATE FUNCTION tokens(doc text) RETURNS TABLE (alias text, token text)
 LANGUAGE sql AS $$
   SELECT t.alias, p.token
-  FROM ts_parse('icu', doc) p
-  JOIN ts_token_type('icu') t ON t.tokid = p.tokid
+  FROM ts_parse('intl', doc) p
+  JOIN ts_token_type('intl') t ON t.tokid = p.tokid
   WHERE t.alias <> 'blank'
 $$;
 

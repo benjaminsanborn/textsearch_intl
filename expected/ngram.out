@@ -1,0 +1,65 @@
+SET client_min_messages = warning;
+CREATE EXTENSION IF NOT EXISTS textsearch_intl CASCADE;
+-- intl_ngram expands Han, kana and Hangul tokens into characters and adjacent pairs; anything else passes through
+SELECT input, ts_lexize('intl_ngram', input)
+FROM (VALUES ('편의점'), ('駅'), ('東京駅'), ('ラーメン'), ('abc'), ('東京12'), ('กาแฟ')) v(input);
+  input   |          ts_lexize           
+----------+------------------------------
+ 편의점   | {편,의,점,편의,의점}
+ 駅       | 
+ 東京駅   | {東,京,駅,東京,京駅}
+ ラーメン | {ラ,ー,メ,ン,ラー,ーメ,メン}
+ abc      | 
+ 東京12   | 
+ กาแฟ     | 
+(7 rows)
+
+SELECT to_tsvector('intl_search_ngram', '행복한편의점 McDonald’s');
+                                             to_tsvector                                              
+------------------------------------------------------------------------------------------------------
+ 'mcdonalds':2 '복':1 '복한':1 '의':1 '의점':1 '점':1 '편':1 '편의':1 '한':1 '한편':1 '행':1 '행복':1
+(1 row)
+
+SELECT phraseto_tsquery('intl_search_ngram', '스타벅스 안양');
+                                   phraseto_tsquery                                    
+---------------------------------------------------------------------------------------
+ ( '스' & '타' & '벅' & '스' & '스타' & '타벅' & '벅스' ) <-> ( '안' & '양' & '안양' )
+(1 row)
+
+-- Words inside Korean and CJK tokens match; ICU word boundaries between tokens still hold
+SELECT q, name,
+       to_tsvector('intl_search', name) @@ phraseto_tsquery('intl_search', q) AS intl_search,
+       to_tsvector('intl_search_ngram', name) @@ phraseto_tsquery('intl_search_ngram', q) AS intl_search_ngram
+FROM (VALUES ('편의점', '행복한편의점'),
+             ('스타벅스', '스타벅스안양평촌점'),
+             ('서울', '서울의 맛집'),
+             ('병원', '서울대학교병원'),
+             ('公園', '中村公園店'),
+             ('駅', '駅前'),
+             ('스타벅스 안양', '스타벅스 안양평촌점'),
+             ('안양 스타벅스', '스타벅스 안양평촌점'),
+             ('京都', '東京都'),
+             ('스타벅스', '파스타벅스'),
+             ('主教', '天主教'),
+             ('กาแฟ', 'ร้านกาแฟสด'),
+             ('mcdonalds', 'McDonald''s')) v(q, name);
+       q       |        name         | intl_search | intl_search_ngram 
+---------------+---------------------+-------------+-------------------
+ 편의점        | 행복한편의점        | f           | t
+ 스타벅스      | 스타벅스안양평촌점  | f           | t
+ 서울          | 서울의 맛집         | f           | t
+ 병원          | 서울대학교병원      | f           | t
+ 公園          | 中村公園店          | f           | t
+ 駅            | 駅前                | f           | t
+ 스타벅스 안양 | 스타벅스 안양평촌점 | f           | t
+ 안양 스타벅스 | 스타벅스 안양평촌점 | f           | f
+ 京都          | 東京都              | f           | f
+ 스타벅스      | 파스타벅스          | f           | t
+ 主教          | 天主教              | f           | t
+ กาแฟ          | ร้านกาแฟสด           | t           | t
+ mcdonalds     | McDonald's          | t           | t
+(13 rows)
+
+-- The dictionary takes no options
+CREATE TEXT SEARCH DICTIONARY intl_ngram_bad (TEMPLATE = intl_ngram_template, size = 3);
+ERROR:  unrecognized intl_ngram parameter: "size"

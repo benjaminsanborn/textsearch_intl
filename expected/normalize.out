@@ -1,7 +1,7 @@
 SET client_min_messages = warning;
-CREATE EXTENSION IF NOT EXISTS icu_parser CASCADE;
--- icu_normalize passes tokens it changes on to the next dictionary, and returns NULL for the rest
-SELECT input, ts_lexize('icu_normalize', input)
+CREATE EXTENSION IF NOT EXISTS textsearch_intl CASCADE;
+-- intl_normalize passes tokens it changes on to the next dictionary, and returns NULL for the rest
+SELECT input, ts_lexize('intl_normalize', input)
 FROM (VALUES ('plain'), ('Café'), ('McDonald''s'), ('McDonald’s'), ('ｾﾌﾞﾝ'), ('ＡＢＣ１２３'), ('㈱'),
              (U&'\0E19\0E4D\0E32'), (U&'\0E99\0ECD\0EB2'), ('น้ำ'), ('’')) v(input);
     input     |  ts_lexize  
@@ -19,8 +19,8 @@ FROM (VALUES ('plain'), ('Café'), ('McDonald''s'), ('McDonald’s'), ('ｾﾌ�
  ’            | {}
 (11 rows)
 
--- icu_search chains icu_normalize, unaccent and simple (ts_debug shows only the first dictionary's output)
-SELECT to_tsvector('icu_search', 'McDonald’s Café ｾﾌﾞﾝｲﾚﾌﾞﾝ Пятёрочка ร้านอาหาร ＡＢＣ１２３');
+-- intl_search chains intl_normalize, unaccent and simple (ts_debug shows only the first dictionary's output)
+SELECT to_tsvector('intl_search', 'McDonald’s Café ｾﾌﾞﾝｲﾚﾌﾞﾝ Пятёрочка ร้านอาหาร ＡＢＣ１２３');
                                         to_tsvector                                        
 -------------------------------------------------------------------------------------------
  'abc123':8 'cafe':2 'mcdonalds':1 'пятерочка':5 'ร้าน':6 'อาหาร':7 'イレブン':4 'セブン':3
@@ -28,8 +28,8 @@ SELECT to_tsvector('icu_search', 'McDonald’s Café ｾﾌﾞﾝｲﾚﾌﾞﾝ
 
 -- Names match regardless of accents, apostrophes, ё/е and character width
 SELECT q, name,
-       to_tsvector('icu_simple', name) @@ phraseto_tsquery('icu_simple', q) AS icu_simple,
-       to_tsvector('icu_search', name) @@ phraseto_tsquery('icu_search', q) AS icu_search
+       to_tsvector('intl_simple', name) @@ phraseto_tsquery('intl_simple', q) AS intl_simple,
+       to_tsvector('intl_search', name) @@ phraseto_tsquery('intl_search', q) AS intl_search
 FROM (VALUES ('mcdonalds', 'McDonald''s'),
              ('mcdonalds', 'McDonald’s Restaurant'),
              ('cafe', 'Café Müller'),
@@ -42,29 +42,29 @@ FROM (VALUES ('mcdonalds', 'McDonald''s'),
              ('अस्पताल', 'सिटी अस्पताल'),
              ('セブンイレブン', 'セブン-イレブン渋谷店'),
              ('中国银行', '中国银行北京分行')) v(q, name);
-       q        |         name          | icu_simple | icu_search 
-----------------+-----------------------+------------+------------
- mcdonalds      | McDonald's            | f          | t
- mcdonalds      | McDonald’s Restaurant | f          | t
- cafe           | Café Müller           | f          | t
- café           | Cafe Central          | f          | t
- пятёрочка      | Пятерочка             | f          | t
- ラーメン       | ﾗｰﾒﾝ屋                | f          | t
- abc            | ＡＢＣストア          | f          | t
- ร้านอาหาร       | ร้านอาหารครัวไทย        | t          | t
- อาหาร          | ร้านอาหาร              | t          | t
- अस्पताल         | सिटी अस्पताल           | t          | t
- セブンイレブン | セブン-イレブン渋谷店 | t          | t
- 中国银行       | 中国银行北京分行      | t          | t
+       q        |         name          | intl_simple | intl_search 
+----------------+-----------------------+-------------+-------------
+ mcdonalds      | McDonald's            | f           | t
+ mcdonalds      | McDonald’s Restaurant | f           | t
+ cafe           | Café Müller           | f           | t
+ café           | Cafe Central          | f           | t
+ пятёрочка      | Пятерочка             | f           | t
+ ラーメン       | ﾗｰﾒﾝ屋                | f           | t
+ abc            | ＡＢＣストア          | f           | t
+ ร้านอาหาร       | ร้านอาหารครัวไทย        | t           | t
+ อาหาร          | ร้านอาหาร              | t           | t
+ अस्पताल         | सिटी अस्पताल           | t           | t
+ セブンイレブン | セブン-イレブン渋谷店 | t           | t
+ 中国银行       | 中国银行北京分行      | t           | t
 (12 rows)
 
 -- Headlines keep the original text
-SELECT ts_headline('icu_search', 'McDonald’s Café, Zürich', phraseto_tsquery('icu_search', 'mcdonalds cafe'));
+SELECT ts_headline('intl_search', 'McDonald’s Café, Zürich', phraseto_tsquery('intl_search', 'mcdonalds cafe'));
               ts_headline              
 ---------------------------------------
  <b>McDonald’s</b> <b>Café</b>, Zürich
 (1 row)
 
 -- The dictionary takes no options
-CREATE TEXT SEARCH DICTIONARY icu_normalize_bad (TEMPLATE = icu_normalize_template, form = 'nfc');
-ERROR:  unrecognized icu_normalize parameter: "form"
+CREATE TEXT SEARCH DICTIONARY intl_normalize_bad (TEMPLATE = intl_normalize_template, form = 'nfc');
+ERROR:  unrecognized intl_normalize parameter: "form"

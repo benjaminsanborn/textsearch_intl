@@ -1,6 +1,6 @@
 SET client_min_messages = warning;
-CREATE EXTENSION IF NOT EXISTS icu_parser CASCADE;
-SELECT tokid, alias, description FROM ts_token_type('icu') ORDER BY tokid;
+CREATE EXTENSION IF NOT EXISTS textsearch_intl CASCADE;
+SELECT tokid, alias, description FROM ts_token_type('intl') ORDER BY tokid;
  tokid | alias  |          description           
 -------+--------+--------------------------------
      2 | word   | Word, letters
@@ -10,13 +10,13 @@ SELECT tokid, alias, description FROM ts_token_type('icu') ORDER BY tokid;
     25 | ideo   | Ideographic word
 (5 rows)
 
-SELECT icu_parser_icu_version() ~ '^[0-9]+\.[0-9]+' AS has_icu_version;
+SELECT intl_icu_version() ~ '^[0-9]+\.[0-9]+' AS has_icu_version;
  has_icu_version 
 -----------------
  t
 (1 row)
 
-SELECT alias, dictionaries FROM ts_debug('icu_simple', 'a 1 カナ 漢字') WHERE alias <> 'blank';
+SELECT alias, dictionaries FROM ts_debug('intl_simple', 'a 1 カナ 漢字') WHERE alias <> 'blank';
  alias  | dictionaries 
 --------+--------------
  word   | {simple}
@@ -26,10 +26,10 @@ SELECT alias, dictionaries FROM ts_debug('icu_simple', 'a 1 カナ 漢字') WHER
 (4 rows)
 
 -- Stemming and stop words for Latin text, ICU segmentation for the rest
-CREATE TEXT SEARCH CONFIGURATION icu_english (PARSER = icu);
-ALTER TEXT SEARCH CONFIGURATION icu_english ADD MAPPING FOR word WITH english_stem;
-ALTER TEXT SEARCH CONFIGURATION icu_english ADD MAPPING FOR number, kana, ideo WITH simple;
-SELECT to_tsvector('icu_english', 'The running cafés of 東京駅前');
+CREATE TEXT SEARCH CONFIGURATION intl_english (PARSER = intl);
+ALTER TEXT SEARCH CONFIGURATION intl_english ADD MAPPING FOR word WITH english_stem;
+ALTER TEXT SEARCH CONFIGURATION intl_english ADD MAPPING FOR number, kana, ideo WITH simple;
+SELECT to_tsvector('intl_english', 'The running cafés of 東京駅前');
             to_tsvector             
 ------------------------------------
  'café':3 'run':2 '東京':5 '駅前':6
@@ -37,47 +37,47 @@ SELECT to_tsvector('icu_english', 'The running cafés of 東京駅前');
 
 -- Accent folding through unaccent
 CREATE EXTENSION IF NOT EXISTS unaccent;
-CREATE TEXT SEARCH CONFIGURATION icu_unaccent (PARSER = icu);
-ALTER TEXT SEARCH CONFIGURATION icu_unaccent ADD MAPPING FOR word, number, kana, ideo WITH unaccent, simple;
-SELECT to_tsvector('icu_unaccent', 'Café Zürich São Paulo');
+CREATE TEXT SEARCH CONFIGURATION intl_unaccent (PARSER = intl);
+ALTER TEXT SEARCH CONFIGURATION intl_unaccent ADD MAPPING FOR word, number, kana, ideo WITH unaccent, simple;
+SELECT to_tsvector('intl_unaccent', 'Café Zürich São Paulo');
               to_tsvector              
 ---------------------------------------
  'cafe':1 'paulo':4 'sao':3 'zurich':2
 (1 row)
 
-SELECT to_tsvector('icu_unaccent', 'Café') @@ plainto_tsquery('icu_unaccent', 'cafe') AS folded;
+SELECT to_tsvector('intl_unaccent', 'Café') @@ plainto_tsquery('intl_unaccent', 'cafe') AS folded;
  folded 
 --------
  t
 (1 row)
 
 -- Leaving a token type unmapped drops it
-ALTER TEXT SEARCH CONFIGURATION icu_english DROP MAPPING FOR number;
-SELECT to_tsvector('icu_english', 'route 66 東京');
+ALTER TEXT SEARCH CONFIGURATION intl_english DROP MAPPING FOR number;
+SELECT to_tsvector('intl_english', 'route 66 東京');
     to_tsvector    
 -------------------
  'rout':1 '東京':2
 (1 row)
 
 -- Unknown token types are rejected
-ALTER TEXT SEARCH CONFIGURATION icu_english ADD MAPPING FOR asciiword WITH simple;
+ALTER TEXT SEARCH CONFIGURATION intl_english ADD MAPPING FOR asciiword WITH simple;
 ERROR:  token type "asciiword" does not exist
-DROP TEXT SEARCH CONFIGURATION icu_english;
-DROP TEXT SEARCH CONFIGURATION icu_unaccent;
+DROP TEXT SEARCH CONFIGURATION intl_english;
+DROP TEXT SEARCH CONFIGURATION intl_unaccent;
 -- The extension can move schemas and be dropped and recreated
 CREATE SCHEMA moved;
-ALTER EXTENSION icu_parser SET SCHEMA moved;
-SELECT to_tsvector('moved.icu_simple', '東京駅');
+ALTER EXTENSION textsearch_intl SET SCHEMA moved;
+SELECT to_tsvector('moved.intl_simple', '東京駅');
    to_tsvector   
 -----------------
  '東京':1 '駅':2
 (1 row)
 
-ALTER EXTENSION icu_parser SET SCHEMA public;
-DROP EXTENSION icu_parser;
+ALTER EXTENSION textsearch_intl SET SCHEMA public;
+DROP EXTENSION textsearch_intl;
 DROP SCHEMA moved;
-CREATE EXTENSION icu_parser CASCADE;
-SELECT to_tsvector('icu_simple', '東京駅');
+CREATE EXTENSION textsearch_intl CASCADE;
+SELECT to_tsvector('intl_simple', '東京駅');
    to_tsvector   
 -----------------
  '東京':1 '駅':2

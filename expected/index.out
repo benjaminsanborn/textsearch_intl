@@ -1,9 +1,9 @@
 SET client_min_messages = warning;
-CREATE EXTENSION IF NOT EXISTS icu_parser CASCADE;
+CREATE EXTENSION IF NOT EXISTS textsearch_intl CASCADE;
 CREATE TABLE places (
   id int PRIMARY KEY,
   name text,
-  name_tsv tsvector GENERATED ALWAYS AS (to_tsvector('icu_simple', name)) STORED
+  name_tsv tsvector GENERATED ALWAYS AS (to_tsvector('intl_simple', name)) STORED
 );
 INSERT INTO places (id, name)
 SELECT i, CASE i % 4
@@ -14,33 +14,33 @@ SELECT i, CASE i % 4
 END
 FROM generate_series(1, 2000) i;
 ANALYZE places;
-CREATE INDEX places_name_gin ON places USING gin (to_tsvector('icu_simple', name));
+CREATE INDEX places_name_gin ON places USING gin (to_tsvector('intl_simple', name));
 CREATE INDEX places_tsv_gist ON places USING gist (name_tsv);
 SET enable_seqscan = off;
 EXPLAIN (COSTS OFF)
-SELECT count(*) FROM places WHERE to_tsvector('icu_simple', name) @@ plainto_tsquery('icu_simple', 'ラーメン');
-                                            QUERY PLAN                                             
----------------------------------------------------------------------------------------------------
+SELECT count(*) FROM places WHERE to_tsvector('intl_simple', name) @@ plainto_tsquery('intl_simple', 'ラーメン');
+                                             QUERY PLAN                                             
+----------------------------------------------------------------------------------------------------
  Aggregate
    ->  Bitmap Heap Scan on places
-         Recheck Cond: (to_tsvector('icu_simple'::regconfig, name) @@ '''ラーメン'''::tsquery)
+         Recheck Cond: (to_tsvector('intl_simple'::regconfig, name) @@ '''ラーメン'''::tsquery)
          ->  Bitmap Index Scan on places_name_gin
-               Index Cond: (to_tsvector('icu_simple'::regconfig, name) @@ '''ラーメン'''::tsquery)
+               Index Cond: (to_tsvector('intl_simple'::regconfig, name) @@ '''ラーメン'''::tsquery)
 (5 rows)
 
-SELECT count(*) FROM places WHERE to_tsvector('icu_simple', name) @@ plainto_tsquery('icu_simple', 'ラーメン');
+SELECT count(*) FROM places WHERE to_tsvector('intl_simple', name) @@ plainto_tsquery('intl_simple', 'ラーメン');
  count 
 -------
    500
 (1 row)
 
-SELECT count(*) FROM places WHERE to_tsvector('icu_simple', name) @@ plainto_tsquery('icu_simple', 'กาแฟ');
+SELECT count(*) FROM places WHERE to_tsvector('intl_simple', name) @@ plainto_tsquery('intl_simple', 'กาแฟ');
  count 
 -------
    500
 (1 row)
 
-SELECT count(*) FROM places WHERE to_tsvector('icu_simple', name) @@ phraseto_tsquery('icu_simple', '图书馆');
+SELECT count(*) FROM places WHERE to_tsvector('intl_simple', name) @@ phraseto_tsquery('intl_simple', '图书馆');
  count 
 -------
    500
@@ -50,7 +50,7 @@ SET enable_bitmapscan = off;
 SET enable_indexscan = on;
 DROP INDEX places_name_gin;
 EXPLAIN (COSTS OFF)
-SELECT count(*) FROM places WHERE name_tsv @@ plainto_tsquery('icu_simple', 'coffee');
+SELECT count(*) FROM places WHERE name_tsv @@ plainto_tsquery('intl_simple', 'coffee');
                        QUERY PLAN                        
 ---------------------------------------------------------
  Aggregate
@@ -58,7 +58,7 @@ SELECT count(*) FROM places WHERE name_tsv @@ plainto_tsquery('icu_simple', 'cof
          Index Cond: (name_tsv @@ '''coffee'''::tsquery)
 (3 rows)
 
-SELECT count(*) FROM places WHERE name_tsv @@ plainto_tsquery('icu_simple', 'coffee');
+SELECT count(*) FROM places WHERE name_tsv @@ plainto_tsquery('intl_simple', 'coffee');
  count 
 -------
    500
@@ -67,7 +67,7 @@ SELECT count(*) FROM places WHERE name_tsv @@ plainto_tsquery('icu_simple', 'cof
 RESET enable_bitmapscan;
 RESET enable_seqscan;
 -- The stored column and a fresh parse agree on every row
-SELECT count(*) FROM places WHERE name_tsv <> to_tsvector('icu_simple', name);
+SELECT count(*) FROM places WHERE name_tsv <> to_tsvector('intl_simple', name);
  count 
 -------
      0
@@ -81,23 +81,23 @@ SET max_parallel_workers_per_gather = 2;
 SET enable_indexscan = off;
 SET enable_bitmapscan = off;
 EXPLAIN (COSTS OFF)
-SELECT count(*) FROM places WHERE to_tsvector('icu_simple', name) @@ plainto_tsquery('icu_simple', 'ラーメン');
-                                          QUERY PLAN                                           
------------------------------------------------------------------------------------------------
+SELECT count(*) FROM places WHERE to_tsvector('intl_simple', name) @@ plainto_tsquery('intl_simple', 'ラーメン');
+                                           QUERY PLAN                                           
+------------------------------------------------------------------------------------------------
  Aggregate
    ->  Gather
          Workers Planned: 2
          ->  Parallel Seq Scan on places
-               Filter: (to_tsvector('icu_simple'::regconfig, name) @@ '''ラーメン'''::tsquery)
+               Filter: (to_tsvector('intl_simple'::regconfig, name) @@ '''ラーメン'''::tsquery)
 (5 rows)
 
-SELECT count(*) FROM places WHERE to_tsvector('icu_simple', name) @@ plainto_tsquery('icu_simple', 'ラーメン');
+SELECT count(*) FROM places WHERE to_tsvector('intl_simple', name) @@ plainto_tsquery('intl_simple', 'ラーメン');
  count 
 -------
    500
 (1 row)
 
-SELECT sum(length(to_tsvector('icu_simple', name))) FROM places;
+SELECT sum(length(to_tsvector('intl_simple', name))) FROM places;
  sum  
 ------
  9000

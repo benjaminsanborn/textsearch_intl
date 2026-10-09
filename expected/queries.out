@@ -1,5 +1,5 @@
 SET client_min_messages = warning;
-CREATE EXTENSION IF NOT EXISTS icu_parser CASCADE;
+CREATE EXTENSION IF NOT EXISTS textsearch_intl CASCADE;
 CREATE TABLE names (id int, name text);
 INSERT INTO names VALUES
   (1, '星巴克咖啡 南京西路店'),
@@ -15,126 +15,126 @@ INSERT INTO names VALUES
 CREATE FUNCTION hits(q tsquery) RETURNS int[]
 LANGUAGE sql AS $$
   SELECT coalesce(array_agg(id ORDER BY id), '{}')
-  FROM names WHERE to_tsvector('icu_simple', name) @@ q
+  FROM names WHERE to_tsvector('intl_simple', name) @@ q
 $$;
 -- Queries are segmented with the same parser as documents
-SELECT plainto_tsquery('icu_simple', '星巴克');
+SELECT plainto_tsquery('intl_simple', '星巴克');
   plainto_tsquery   
 --------------------
  '星' & '巴' & '克'
 (1 row)
 
-SELECT plainto_tsquery('icu_simple', 'ラーメン店');
+SELECT plainto_tsquery('intl_simple', 'ラーメン店');
   plainto_tsquery  
 -------------------
  'ラーメン' & '店'
 (1 row)
 
-SELECT phraseto_tsquery('icu_simple', '東京駅前');
+SELECT phraseto_tsquery('intl_simple', '東京駅前');
  phraseto_tsquery  
 -------------------
  '東京' <-> '駅前'
 (1 row)
 
-SELECT hits(plainto_tsquery('icu_simple', '星巴克'));
+SELECT hits(plainto_tsquery('intl_simple', '星巴克'));
  hits 
 ------
  {1}
 (1 row)
 
-SELECT hits(plainto_tsquery('icu_simple', 'สตาร์บัคส์'));
+SELECT hits(plainto_tsquery('intl_simple', 'สตาร์บัคส์'));
  hits  
 -------
  {2,3}
 (1 row)
 
-SELECT hits(plainto_tsquery('icu_simple', 'セブンイレブン'));
+SELECT hits(plainto_tsquery('intl_simple', 'セブンイレブン'));
  hits  
 -------
  {4,5}
 (1 row)
 
-SELECT hits(plainto_tsquery('icu_simple', 'セブン'));
+SELECT hits(plainto_tsquery('intl_simple', 'セブン'));
  hits  
 -------
  {4,5}
 (1 row)
 
-SELECT hits(plainto_tsquery('icu_simple', 'ラーメン'));
+SELECT hits(plainto_tsquery('intl_simple', 'ラーメン'));
  hits 
 ------
  {6}
 (1 row)
 
-SELECT hits(plainto_tsquery('icu_simple', '麦当劳'));
+SELECT hits(plainto_tsquery('intl_simple', '麦当劳'));
  hits 
 ------
  {9}
 (1 row)
 
-SELECT hits(plainto_tsquery('icu_simple', 'coffee'));
+SELECT hits(plainto_tsquery('intl_simple', 'coffee'));
  hits 
 ------
  {7}
 (1 row)
 
-SELECT hits(plainto_tsquery('icu_simple', 'CAFÉ'));
+SELECT hits(plainto_tsquery('intl_simple', 'CAFÉ'));
  hits 
 ------
  {8}
 (1 row)
 
-SELECT hits(plainto_tsquery('icu_simple', '스타벅스'));
+SELECT hits(plainto_tsquery('intl_simple', '스타벅스'));
  hits 
 ------
  {10}
 (1 row)
 
 -- Phrase, prefix, negation and OR
-SELECT hits(phraseto_tsquery('icu_simple', '東京駅前'));
+SELECT hits(phraseto_tsquery('intl_simple', '東京駅前'));
  hits 
 ------
  {6}
 (1 row)
 
-SELECT hits(phraseto_tsquery('icu_simple', '駅前東京'));
+SELECT hits(phraseto_tsquery('intl_simple', '駅前東京'));
  hits 
 ------
  {}
 (1 row)
 
-SELECT hits(to_tsquery('icu_simple', 'bott:*'));
+SELECT hits(to_tsquery('intl_simple', 'bott:*'));
  hits 
 ------
  {7}
 (1 row)
 
-SELECT hits(to_tsquery('icu_simple', 'ラーメ:*'));
+SELECT hits(to_tsquery('intl_simple', 'ラーメ:*'));
  hits 
 ------
  {6}
 (1 row)
 
 -- A CJK prefix can segment differently from the full word, so prefix matching is unreliable
-SELECT to_tsquery('icu_simple', 'ラー:*');
+SELECT to_tsquery('intl_simple', 'ラー:*');
     to_tsquery     
 -------------------
  'ラ':* <-> 'ー':*
 (1 row)
 
-SELECT hits(to_tsquery('icu_simple', 'ラー:*'));
+SELECT hits(to_tsquery('intl_simple', 'ラー:*'));
  hits 
 ------
  {}
 (1 row)
 
-SELECT hits(websearch_to_tsquery('icu_simple', 'スターバックス or 星巴克 or "Blue Bottle"'));
+SELECT hits(websearch_to_tsquery('intl_simple', 'スターバックス or 星巴克 or "Blue Bottle"'));
  hits  
 -------
  {1,7}
 (1 row)
 
-SELECT hits(websearch_to_tsquery('icu_simple', 'セブン -渋谷'));
+SELECT hits(websearch_to_tsquery('intl_simple', 'セブン -渋谷'));
  hits 
 ------
  {4}
@@ -151,7 +151,7 @@ WHERE to_tsvector('simple', name) @@ plainto_tsquery('simple', 'ラーメン')
 (1 row)
 
 -- Ranking works on ICU positions
-SELECT id, round(ts_rank(to_tsvector('icu_simple', name), plainto_tsquery('icu_simple', 'セブン 店'))::numeric, 4) AS rank
+SELECT id, round(ts_rank(to_tsvector('intl_simple', name), plainto_tsquery('intl_simple', 'セブン 店'))::numeric, 4) AS rank
 FROM names WHERE id IN (4, 5) ORDER BY id;
  id |  rank  
 ----+--------

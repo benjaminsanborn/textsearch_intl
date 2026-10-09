@@ -23,13 +23,19 @@ INSERT INTO methods VALUES
   ('default parser', 1, 'length(to_tsvector(''simple'', title))',
    'gin (to_tsvector(''simple'', title))', 'to_tsvector(''simple'', title) @@ plainto_tsquery(''simple'', %L)',
    'to_tsvector(''simple'', title) @@ plainto_tsquery(''simple'', term)'),
-  ('icu_parser', 2, 'length(to_tsvector(''icu_simple'', title))',
-   'gin (to_tsvector(''icu_simple'', title))', 'to_tsvector(''icu_simple'', title) @@ plainto_tsquery(''icu_simple'', %L)',
-   'to_tsvector(''icu_simple'', title) @@ plainto_tsquery(''icu_simple'', term)'),
-  ('pg_trgm', 3, 'cardinality(show_trgm(title))', 'gin (title gin_trgm_ops)', 'title LIKE %L',
+  ('intl_simple', 2, 'length(to_tsvector(''intl_simple'', title))',
+   'gin (to_tsvector(''intl_simple'', title))', 'to_tsvector(''intl_simple'', title) @@ plainto_tsquery(''intl_simple'', %L)',
+   'to_tsvector(''intl_simple'', title) @@ plainto_tsquery(''intl_simple'', term)'),
+  ('intl_search', 3, 'length(to_tsvector(''intl_search'', title))',
+   'gin (to_tsvector(''intl_search'', title))', 'to_tsvector(''intl_search'', title) @@ plainto_tsquery(''intl_search'', %L)',
+   'to_tsvector(''intl_search'', title) @@ plainto_tsquery(''intl_search'', term)'),
+  ('intl_search_ngram', 4, 'length(to_tsvector(''intl_search_ngram'', title))',
+   'gin (to_tsvector(''intl_search_ngram'', title))', 'to_tsvector(''intl_search_ngram'', title) @@ plainto_tsquery(''intl_search_ngram'', %L)',
+   'to_tsvector(''intl_search_ngram'', title) @@ plainto_tsquery(''intl_search_ngram'', term)'),
+  ('pg_trgm', 5, 'cardinality(show_trgm(title))', 'gin (title gin_trgm_ops)', 'title LIKE %L',
    'title LIKE query_arg(''pg_trgm'', term)');
 INSERT INTO methods
-SELECT 'pg_bigm', 4, 'cardinality(show_bigm(title))', 'gin (title gin_bigm_ops)', 'title LIKE %L',
+SELECT 'pg_bigm', 6, 'cardinality(show_bigm(title))', 'gin (title gin_bigm_ops)', 'title LIKE %L',
        'title LIKE query_arg(''pg_bigm'', term)'
 WHERE EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_bigm');
 
@@ -107,7 +113,7 @@ SELECT l.lang, w.word AS term
 FROM langs l
 CROSS JOIN LATERAL (
   SELECT word FROM ts_stat(format(
-    'SELECT to_tsvector(''icu_simple'', title) FROM heldout WHERE lang = %L', l.lang))
+    'SELECT to_tsvector(''intl_simple'', title) FROM heldout WHERE lang = %L', l.lang))
   WHERE char_length(word) >= 2 AND word ~ l.script_re
   ORDER BY ndoc DESC, word
   OFFSET 100 LIMIT 200

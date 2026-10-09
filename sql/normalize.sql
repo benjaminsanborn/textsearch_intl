@@ -1,18 +1,18 @@
 SET client_min_messages = warning;
-CREATE EXTENSION IF NOT EXISTS icu_parser CASCADE;
+CREATE EXTENSION IF NOT EXISTS textsearch_intl CASCADE;
 
--- icu_normalize passes tokens it changes on to the next dictionary, and returns NULL for the rest
-SELECT input, ts_lexize('icu_normalize', input)
+-- intl_normalize passes tokens it changes on to the next dictionary, and returns NULL for the rest
+SELECT input, ts_lexize('intl_normalize', input)
 FROM (VALUES ('plain'), ('Café'), ('McDonald''s'), ('McDonald’s'), ('ｾﾌﾞﾝ'), ('ＡＢＣ１２３'), ('㈱'),
              (U&'\0E19\0E4D\0E32'), (U&'\0E99\0ECD\0EB2'), ('น้ำ'), ('’')) v(input);
 
--- icu_search chains icu_normalize, unaccent and simple (ts_debug shows only the first dictionary's output)
-SELECT to_tsvector('icu_search', 'McDonald’s Café ｾﾌﾞﾝｲﾚﾌﾞﾝ Пятёрочка ร้านอาหาร ＡＢＣ１２３');
+-- intl_search chains intl_normalize, unaccent and simple (ts_debug shows only the first dictionary's output)
+SELECT to_tsvector('intl_search', 'McDonald’s Café ｾﾌﾞﾝｲﾚﾌﾞﾝ Пятёрочка ร้านอาหาร ＡＢＣ１２３');
 
 -- Names match regardless of accents, apostrophes, ё/е and character width
 SELECT q, name,
-       to_tsvector('icu_simple', name) @@ phraseto_tsquery('icu_simple', q) AS icu_simple,
-       to_tsvector('icu_search', name) @@ phraseto_tsquery('icu_search', q) AS icu_search
+       to_tsvector('intl_simple', name) @@ phraseto_tsquery('intl_simple', q) AS intl_simple,
+       to_tsvector('intl_search', name) @@ phraseto_tsquery('intl_search', q) AS intl_search
 FROM (VALUES ('mcdonalds', 'McDonald''s'),
              ('mcdonalds', 'McDonald’s Restaurant'),
              ('cafe', 'Café Müller'),
@@ -27,7 +27,7 @@ FROM (VALUES ('mcdonalds', 'McDonald''s'),
              ('中国银行', '中国银行北京分行')) v(q, name);
 
 -- Headlines keep the original text
-SELECT ts_headline('icu_search', 'McDonald’s Café, Zürich', phraseto_tsquery('icu_search', 'mcdonalds cafe'));
+SELECT ts_headline('intl_search', 'McDonald’s Café, Zürich', phraseto_tsquery('intl_search', 'mcdonalds cafe'));
 
 -- The dictionary takes no options
-CREATE TEXT SEARCH DICTIONARY icu_normalize_bad (TEMPLATE = icu_normalize_template, form = 'nfc');
+CREATE TEXT SEARCH DICTIONARY intl_normalize_bad (TEMPLATE = intl_normalize_template, form = 'nfc');

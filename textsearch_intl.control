@@ -1,0 +1,5 @@
+comment = 'Multilingual full text search: ICU word segmentation, normalization and n-gram matching'
+default_version = '1.0'
+module_pathname = '$libdir/textsearch_intl'
+relocatable = true
+requires = 'unaccent'

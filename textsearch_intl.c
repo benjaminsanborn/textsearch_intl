@@ -10,7 +10,9 @@
 
 #include <unicode/ubrk.h>
 #include <unicode/unorm2.h>
+#include <unicode/uscript.h>
 #include <unicode/ustring.h>
+#include <unicode/utf8.h>
 #include <unicode/utext.h>
 #include <unicode/uversion.h>
 #include <unicode/uchar.h>
@@ -51,7 +53,7 @@ check_icu(UErrorCode status, const char *what)
 {
 	if (U_FAILURE(status))
 		ereport(ERROR,
-				(errmsg("icu_parser: %s failed: %s", what, u_errorName(status))));
+				(errmsg("textsearch_intl: %s failed: %s", what, u_errorName(status))));
 }
 
 static void
@@ -69,9 +71,9 @@ close_icu(void *arg)
 	state->text = NULL;
 }
 
-PG_FUNCTION_INFO_V1(icu_prsstart);
+PG_FUNCTION_INFO_V1(intl_prsstart);
 Datum
-icu_prsstart(PG_FUNCTION_ARGS)
+intl_prsstart(PG_FUNCTION_ARGS)
 {
 	char	   *buf = (char *) PG_GETARG_POINTER(0);
 	int32		len = PG_GETARG_INT32(1);
@@ -81,7 +83,7 @@ icu_prsstart(PG_FUNCTION_ARGS)
 	if (GetDatabaseEncoding() != PG_UTF8)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("icu_parser requires a UTF8 database")));
+				 errmsg("textsearch_intl requires a UTF8 database")));
 
 	if (shared_iter == NULL)
 	{
@@ -119,9 +121,9 @@ icu_prsstart(PG_FUNCTION_ARGS)
 	PG_RETURN_POINTER(state);
 }
 
-PG_FUNCTION_INFO_V1(icu_prsgettoken);
+PG_FUNCTION_INFO_V1(intl_prsgettoken);
 Datum
-icu_prsgettoken(PG_FUNCTION_ARGS)
+intl_prsgettoken(PG_FUNCTION_ARGS)
 {
 	IcuParserState *state = (IcuParserState *) PG_GETARG_POINTER(0);
 	char	  **token = (char **) PG_GETARG_POINTER(1);
@@ -150,9 +152,9 @@ icu_prsgettoken(PG_FUNCTION_ARGS)
 	PG_RETURN_INT32(ICU_BLANK);
 }
 
-PG_FUNCTION_INFO_V1(icu_prsend);
+PG_FUNCTION_INFO_V1(intl_prsend);
 Datum
-icu_prsend(PG_FUNCTION_ARGS)
+intl_prsend(PG_FUNCTION_ARGS)
 {
 	close_icu(PG_GETARG_POINTER(0));
 	PG_RETURN_VOID();
@@ -166,9 +168,9 @@ set_lexdescr(LexDescr *descr, int id, const char *alias, const char *description
 	descr->descr = pstrdup(description);
 }
 
-PG_FUNCTION_INFO_V1(icu_prslextype);
+PG_FUNCTION_INFO_V1(intl_prslextype);
 Datum
-icu_prslextype(PG_FUNCTION_ARGS)
+intl_prslextype(PG_FUNCTION_ARGS)
 {
 	LexDescr   *descr = palloc0(sizeof(LexDescr) * 6);
 
@@ -181,9 +183,9 @@ icu_prslextype(PG_FUNCTION_ARGS)
 	PG_RETURN_POINTER(descr);
 }
 
-PG_FUNCTION_INFO_V1(icu_parser_icu_version);
+PG_FUNCTION_INFO_V1(intl_icu_version);
 Datum
-icu_parser_icu_version(PG_FUNCTION_ARGS)
+intl_icu_version(PG_FUNCTION_ARGS)
 {
 	UVersionInfo version;
 	char		buf[U_MAX_VERSION_STRING_LENGTH];
@@ -300,23 +302,23 @@ normalize_token(const char *in, int32 len)
 	return out;
 }
 
-PG_FUNCTION_INFO_V1(icu_normalize_init);
+PG_FUNCTION_INFO_V1(intl_normalize_init);
 Datum
-icu_normalize_init(PG_FUNCTION_ARGS)
+intl_normalize_init(PG_FUNCTION_ARGS)
 {
 	List	   *options = (List *) PG_GETARG_POINTER(0);
 
 	if (options != NIL)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				 errmsg("unrecognized icu_normalize parameter: \"%s\"",
+				 errmsg("unrecognized intl_normalize parameter: \"%s\"",
 						((DefElem *) linitial(options))->defname)));
 	PG_RETURN_POINTER(palloc0(1));
 }
 
-PG_FUNCTION_INFO_V1(icu_normalize_lexize);
+PG_FUNCTION_INFO_V1(intl_normalize_lexize);
 Datum
-icu_normalize_lexize(PG_FUNCTION_ARGS)
+intl_normalize_lexize(PG_FUNCTION_ARGS)
 {
 	char	   *in = (char *) PG_GETARG_POINTER(1);
 	int32		len = PG_GETARG_INT32(2);
@@ -326,7 +328,7 @@ icu_normalize_lexize(PG_FUNCTION_ARGS)
 	if (GetDatabaseEncoding() != PG_UTF8)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("icu_normalize requires a UTF8 database")));
+				 errmsg("intl_normalize requires a UTF8 database")));
 
 	out = normalize_token(in, len);
 	if (out == NULL)
@@ -338,5 +340,84 @@ icu_normalize_lexize(PG_FUNCTION_ARGS)
 		res[0].lexeme = out;
 		res[0].flags = TSL_FILTER;
 	}
+	PG_RETURN_POINTER(res);
+}
+
+/*
+ * Characters whose words ICU keeps as long dictionary or unknown runs, so a
+ * search for part of one has to match pieces of the token.  U+30FC (prolonged
+ * sound mark) is Common script but only appears inside kana words.
+ */
+static bool
+is_ngram_char(UChar32 c)
+{
+	UErrorCode	status = U_ZERO_ERROR;
+	UScriptCode script;
+
+	if (c == 0x30FC)
+		return true;
+	script = uscript_getScript(c, &status);
+	if (U_FAILURE(status))
+		return false;
+	return script == USCRIPT_HAN || script == USCRIPT_HIRAGANA ||
+		script == USCRIPT_KATAKANA || script == USCRIPT_HANGUL;
+}
+
+PG_FUNCTION_INFO_V1(intl_ngram_init);
+Datum
+intl_ngram_init(PG_FUNCTION_ARGS)
+{
+	List	   *options = (List *) PG_GETARG_POINTER(0);
+
+	if (options != NIL)
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("unrecognized intl_ngram parameter: \"%s\"",
+						((DefElem *) linitial(options))->defname)));
+	PG_RETURN_POINTER(palloc0(1));
+}
+
+/*
+ * Returns every character and every pair of adjacent characters of a Han,
+ * kana or Hangul token, all at the token's position.  A query token goes
+ * through the same expansion, and to_tsquery ANDs lexemes that share a
+ * position, so a query matches any document token containing its pieces,
+ * while phrase operators still order whole tokens.
+ */
+PG_FUNCTION_INFO_V1(intl_ngram_lexize);
+Datum
+intl_ngram_lexize(PG_FUNCTION_ARGS)
+{
+	char	   *in = (char *) PG_GETARG_POINTER(1);
+	int32		len = PG_GETARG_INT32(2);
+	int32	   *starts = palloc(sizeof(int32) * (len + 1));
+	int32		n = 0;
+	int32		i = 0;
+	int32		k = 0;
+	TSLexeme   *res;
+
+	if (GetDatabaseEncoding() != PG_UTF8)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("intl_ngram requires a UTF8 database")));
+
+	while (i < len)
+	{
+		UChar32		c;
+
+		starts[n++] = i;
+		U8_NEXT(in, i, len, c);
+		if (c < 0 || !is_ngram_char(c))
+			PG_RETURN_POINTER(NULL);
+	}
+	starts[n] = len;
+	if (n < 2)
+		PG_RETURN_POINTER(NULL);
+
+	res = palloc0(sizeof(TSLexeme) * (2 * n));
+	for (int32 j = 0; j < n; j++)
+		res[k++].lexeme = pnstrdup(in + starts[j], starts[j + 1] - starts[j]);
+	for (int32 j = 0; j + 1 < n; j++)
+		res[k++].lexeme = pnstrdup(in + starts[j], starts[j + 2] - starts[j]);
 	PG_RETURN_POINTER(res);
 }
