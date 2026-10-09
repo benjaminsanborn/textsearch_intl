@@ -24,7 +24,15 @@ The evidence comes from three places:
 ## Advice that applies to every language
 
 - **Query with `phraseto_tsquery`, not `plainto_tsquery`.** When ICU splits a name into pieces, a plain query requires the pieces to appear anywhere in the title, in any order. `星巴克` (Starbucks) splits into `星|巴|克`, so `plainto_tsquery` matches `克巴星餐厅`; `phraseto_tsquery` requires them adjacent and in order, and doesn't.
-- **Normalize before tokenizing.** icu_parser doesn't apply Unicode normalization. Index `to_tsvector('icu_simple', normalize(name, NFKC))` so that half-width katakana (`ｾﾌﾞﾝ`), full-width Latin (`ＡＢＣ`) and decomposed accents match their usual forms.
+- **Normalize before tokenizing, but repair Thai and Lao afterwards.** icu_parser doesn't apply Unicode normalization. NFKC makes half-width katakana (`ｾﾌﾞﾝ`), full-width Latin (`ＡＢＣ`) and decomposed accents match their usual forms. It also splits the Thai vowel `ำ` and the Lao vowel `ຳ` into two characters, after which ICU's dictionary no longer recognizes the word (`จำกัด` becomes `จํา|กัด`). Recombine them after normalizing:
+
+  ```sql
+  CREATE FUNCTION search_normalize(t text) RETURNS text
+  LANGUAGE sql IMMUTABLE PARALLEL SAFE
+  RETURN replace(replace(normalize(t, NFKC), U&'\0E4D\0E32', U&'\0E33'), U&'\0ECD\0EB2', U&'\0EB3');
+
+  CREATE INDEX ON places USING gin (to_tsvector('icu_simple', search_normalize(name)));
+  ```
 - **Strip accents with a config if your users type without them.** The `unaccent` dictionary works with icu_parser (see the README's custom configuration example).
 - **Pair it with an n-gram index for partial words.** icu_parser matches whole words only. For Korean, for names ICU doesn't know, and for prefixes of CJK words, add pg_bigm (or pg_trgm for terms of three or more characters) and OR the two conditions.
 
