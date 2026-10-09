@@ -6,18 +6,31 @@ SET work_mem = '256MB';
 SET client_min_messages = warning;
 
 CREATE TABLE langs AS
-SELECT lang, ord FROM unnest(string_to_array(:'langs', ' ')) WITH ORDINALITY AS l(lang, ord);
+SELECT lang, ord,
+       CASE lang
+         WHEN 'en' THEN '^[a-z]+$'
+         WHEN 'zh' THEN '^[一-鿿㐀-䶿]+$'
+         WHEN 'ja' THEN '^[ぁ-ゟ゠-ヿ一-鿿㐀-䶿]+$'
+         WHEN 'ko' THEN '^[가-힣]+$'
+         WHEN 'th' THEN '^[ก-๏]+$'
+         ELSE '.'
+       END AS script_re
+FROM unnest(string_to_array(:'langs', ' ')) WITH ORDINALITY AS l(lang, ord);
 
-CREATE TABLE methods (method text PRIMARY KEY, ord int, expr text, index_def text, predicate text);
+CREATE TABLE methods (method text PRIMARY KEY, ord int, expr text, index_def text, predicate text, match_expr text);
 INSERT INTO methods VALUES
-  ('scan only', 0, 'length(title)', NULL, NULL),
+  ('scan only', 0, 'length(title)', NULL, NULL, NULL),
   ('default parser', 1, 'length(to_tsvector(''simple'', title))',
-   'gin (to_tsvector(''simple'', title))', 'to_tsvector(''simple'', title) @@ plainto_tsquery(''simple'', %L)'),
+   'gin (to_tsvector(''simple'', title))', 'to_tsvector(''simple'', title) @@ plainto_tsquery(''simple'', %L)',
+   'to_tsvector(''simple'', title) @@ plainto_tsquery(''simple'', term)'),
   ('icu_parser', 2, 'length(to_tsvector(''icu_simple'', title))',
-   'gin (to_tsvector(''icu_simple'', title))', 'to_tsvector(''icu_simple'', title) @@ plainto_tsquery(''icu_simple'', %L)'),
-  ('pg_trgm', 3, 'cardinality(show_trgm(title))', 'gin (title gin_trgm_ops)', 'title LIKE %L');
+   'gin (to_tsvector(''icu_simple'', title))', 'to_tsvector(''icu_simple'', title) @@ plainto_tsquery(''icu_simple'', %L)',
+   'to_tsvector(''icu_simple'', title) @@ plainto_tsquery(''icu_simple'', term)'),
+  ('pg_trgm', 3, 'cardinality(show_trgm(title))', 'gin (title gin_trgm_ops)', 'title LIKE %L',
+   'title LIKE query_arg(''pg_trgm'', term)');
 INSERT INTO methods
-SELECT 'pg_bigm', 4, 'cardinality(show_bigm(title))', 'gin (title gin_bigm_ops)', 'title LIKE %L'
+SELECT 'pg_bigm', 4, 'cardinality(show_bigm(title))', 'gin (title gin_bigm_ops)', 'title LIKE %L',
+       'title LIKE query_arg(''pg_bigm'', term)'
 WHERE EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_bigm');
 
 CREATE TABLE results (lang text, method text, metric text, value numeric, PRIMARY KEY (lang, method, metric));
@@ -88,14 +101,14 @@ DROP TABLE ranked;
 
 DROP TABLE titles_raw;
 
--- 200 query terms per language: ICU words of two or more characters, frequency ranks 101-300
+-- 200 query terms per language: ICU words of two or more characters in the language's own script, frequency ranks 101-300
 CREATE TABLE terms AS
 SELECT l.lang, w.word AS term
 FROM langs l
 CROSS JOIN LATERAL (
   SELECT word FROM ts_stat(format(
     'SELECT to_tsvector(''icu_simple'', title) FROM heldout WHERE lang = %L', l.lang))
-  WHERE char_length(word) >= 2 AND word !~ '^[0-9[:punct:]]+$'
+  WHERE char_length(word) >= 2 AND word ~ l.script_re
   ORDER BY ndoc DESC, word
   OFFSET 100 LIMIT 200
 ) w;
@@ -161,3 +174,26 @@ FROM langs l CROSS JOIN methods m WHERE m.predicate IS NOT NULL ORDER BY l.ord, 
 
 SELECT format('INSERT INTO results VALUES (%L, %L, ''index_queries'', index_queries(%L, %L))', l.lang, m.method, l.lang, m.method)
 FROM langs l CROSS JOIN methods m WHERE m.predicate IS NOT NULL ORDER BY l.ord, m.ord \gexec
+
+-- Recall and overmatch on hand-labeled term/title pairs from bench/labels.csv
+INSERT INTO results
+SELECT lang, 'scan only', 'labeled', count(*) FROM labels WHERE lang IN (SELECT lang FROM langs) GROUP BY lang;
+INSERT INTO results
+SELECT lang, 'scan only', 'labeled_match', count(*) FILTER (WHERE label = 'match') FROM labels WHERE lang IN (SELECT lang FROM langs) GROUP BY lang;
+
+SELECT format($f$
+  INSERT INTO results
+  SELECT s.lang, %L, m.metric, m.value
+  FROM (
+    SELECT lang,
+           count(*) FILTER (WHERE label = 'match') AS true_n,
+           count(*) FILTER (WHERE label = 'match' AND hit) AS true_hits,
+           count(*) FILTER (WHERE label = 'over' AND hit) AS over_hits,
+           count(*) FILTER (WHERE hit) AS hits
+    FROM (SELECT lang, label, %s AS hit FROM labels WHERE lang IN (SELECT lang FROM langs)) x
+    GROUP BY lang
+  ) s
+  CROSS JOIN LATERAL (VALUES ('recall', 100.0 * true_hits / nullif(true_n, 0)),
+                             ('overmatch', 100.0 * over_hits / nullif(hits, 0))) m(metric, value)
+  WHERE m.value IS NOT NULL$f$, method, match_expr)
+FROM methods WHERE match_expr IS NOT NULL ORDER BY ord \gexec

@@ -36,7 +36,11 @@ psql -X -q -v ON_ERROR_STOP=1 -d "$DB" <<SQL
 CREATE EXTENSION icu_parser;
 CREATE EXTENSION pg_trgm;
 CREATE UNLOGGED TABLE titles_raw (lang text, title text);
+CREATE TABLE labels (lang text, term text, title text, label text CHECK (label IN ('match', 'over')));
 SQL
+if [ -s "$BENCH_DIR/labels.csv" ]; then
+  psql -X -q -v ON_ERROR_STOP=1 -d "$DB" -c "\\copy labels FROM '$BENCH_DIR/labels.csv' WITH CSV HEADER"
+fi
 psql -X -q -d "$DB" -c "CREATE EXTENSION pg_bigm" 2>/dev/null || echo "pg_bigm is not installed; skipping it"
 
 for lang in $LANGS; do

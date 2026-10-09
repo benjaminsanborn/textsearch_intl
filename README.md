@@ -119,23 +119,28 @@ GIN index size:
 | Korean | 30.1 MB | 28.8 MB | 48.9 MB | 24.3 MB |
 | Thai | 37.6 MB | 13.7 MB | 23.4 MB | 18.8 MB |
 
-200 single-word queries per language, terms taken from a held-out set of titles. "Found" is the share of titles containing the term as a substring that the method returned:
+200 single-word queries per language, each a word that icu_parser produced from a held-out set of titles, written in the language's own script. Recall and overmatch are measured on 250 term/title pairs per language, drawn at random from all titles that contain a query term as a substring, and labeled in [bench/labels.csv](bench/labels.csv) as a real word match or an overmatch (first pass by Claude, spot-checked; corrections welcome) (see [the labeling rule](bench/results.md#labeled-sample)):
 
 | | default parser | icu_parser | pg_trgm | pg_bigm |
 |---|--:|--:|--:|--:|
-| Chinese | 0.03 ms, 7.9% found | 0.10 ms, 78.7% found | 23.6 ms, 100% found | 0.13 ms, 100% found |
-| Japanese | 0.04 ms, 5.5% found | 0.14 ms, 49.9% found | 18.6 ms, 100% found | 0.24 ms, 100% found |
-| Korean | 0.07 ms, 39.0% found | 0.07 ms, 41.2% found | 15.7 ms, 100% found | 0.14 ms, 100% found |
-| Thai | 0.04 ms, 1.1% found | 0.27 ms, 35.2% found | 16.6 ms, 100% found | 0.94 ms, 100% found |
+| Chinese | 0.03 ms, 10% recall | 0.11 ms, 93% recall, 16% overmatch | 21.7 ms, 100% recall, 18% overmatch | 0.11 ms, 100% recall, 18% overmatch |
+| Japanese | 0.04 ms, 7% recall | 0.13 ms, 86% recall, 20% overmatch | 18.7 ms, 100% recall, 54% overmatch | 0.25 ms, 100% recall, 54% overmatch |
+| Korean | 0.06 ms, 47% recall, 0% overmatch | 0.07 ms, 48% recall, 1% overmatch | 17.0 ms, 100% recall, 22% overmatch | 0.14 ms, 100% recall, 22% overmatch |
+| Thai | 0.04 ms, 5% recall | 0.28 ms, 79% recall, 44% overmatch | 16.9 ms, 100% recall, 77% overmatch | 0.97 ms, 100% recall, 77% overmatch |
+
+The default parser has 0% overmatch in every language. Recall rests on 204 real matches for Chinese, 115 for Japanese, 195 for Korean and 57 for Thai, so the Thai figure is good to about ±10 points.
 
 What this shows:
 
-- **The default parser can't find words in unspaced scripts.** It finds 1–8% of Chinese, Japanese and Thai occurrences, only where the word happens to be the whole run between spaces or punctuation.
-- **icu_parser costs about 3× the default parser to tokenize Chinese and Japanese, 1.5× for Thai, and nothing extra for Korean or English.** That's still under 2 µs per title, and its index is the smallest for Chinese, Japanese and Thai.
-- **The n-gram methods answer a different question.** `LIKE '%term%'` returns every substring occurrence, including ones that cross word boundaries (`京都` inside `東京都`). icu_parser returns word matches, which is why its share is below 100%; the gap mixes true misses with substring hits that aren't the word. Korean shows ~40% for both tokenizers because particles attach to nouns (`서울은`), and neither splits them off.
-- **pg_trgm can't use its index for one- and two-character terms**, which most CJK words are, so it uses the index for only 24 of 200 Chinese queries and the rest scan. pg_bigm is the fast option when substring semantics are what you want.
+- **The default parser can't find words in unspaced scripts.** It finds 5–10% of real Chinese, Japanese and Thai matches, only where the word happens to be the whole run between spaces or punctuation.
+- **icu_parser finds most real matches in Chinese and Japanese.** It finds 93% in Chinese and 86% in Japanese, with far less overmatch than substring search in Japanese and Thai. Most of what it misses is the term inside a dictionary compound: a search for `機場` (airport) doesn't find `國際機場` (international airport), because ICU keeps the compound as one word.
+- **Korean gains nothing from icu_parser.** Words are already separated by spaces, but particles and suffixes attach to nouns (`서울은`, `스타벅스커피`), and neither tokenizer splits them off. For Korean, use n-grams.
+- **ICU breaks up names it doesn't know.** Unfamiliar transliterated names come out as fragments that are real tokens (`อง`, `ซ์` in Thai; `ンズ`, `ジョ` in Japanese). Those fragments match inside unrelated names, which is where icu_parser's Thai and Japanese overmatch comes from. It also biases this benchmark: the query terms are drawn from icu_parser's own output, so they include such fragments, which nobody would search for.
+- **The n-gram methods return every substring.** They score 100% recall by definition, and the overmatch column shows what that costs.
+- **pg_trgm can't use its index for one- and two-character terms**, which most CJK words are. It used the index for only 22 of 200 Chinese queries, and the rest scanned the table. pg_bigm gives the same results at index speed.
+- **Cost:** icu_parser takes about 3× the default parser's time to tokenize Chinese and Japanese, 1.5× for Thai, and about the same for Korean and English. That's still under 2 µs per title, and its index is the smallest for Chinese, Japanese and Thai.
 
-Reproduce with `./bench/run.sh` (needs `curl`, `psql`, pg_trgm and optionally pg_bigm). It downloads the title dumps into `bench/data/` and writes `bench/results.md`. `BENCH_SAMPLE`, `BENCH_RUNS`, `BENCH_LANGS` and `BENCH_DUMP` change the sample size, repetitions, languages and dump date. `LC_CTYPE` must be a UTF-8 locale, or pg_trgm treats every CJK and Thai character as a separator; the script picks `C.UTF-8` when it exists.
+Reproduce with `./bench/run.sh` (needs `curl`, `psql`, pg_trgm and optionally pg_bigm). It downloads the title dumps into `bench/data/`, scores every method against `bench/labels.csv`, and writes `bench/results.md`. To label a fresh sample, for example after changing the dump or the term rules, run `psql -d icu_parser_bench -v per_lang=250 -f bench/pairs.sql > pairs.csv` after a run, add a `label` column, and save it as `bench/labels.csv`. `BENCH_SAMPLE`, `BENCH_RUNS`, `BENCH_LANGS` and `BENCH_DUMP` change the sample size, repetitions, languages and dump date. `LC_CTYPE` must be a UTF-8 locale, or pg_trgm treats every CJK and Thai character as a separator; the script picks `C.UTF-8` when it exists.
 
 ## Tests
 
