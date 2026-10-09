@@ -51,7 +51,10 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y postgresql-common
           sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
-          sudo apt-get install -y postgresql-18 postgresql-server-dev-18 postgresql-18-pg-bigm libicu-dev pkg-config
+          sudo apt-get install -y postgresql-18 postgresql-server-dev-18 libicu-dev pkg-config
+          git clone --depth 1 --branch v1.2-20250903 https://github.com/pgbigm/pg_bigm /tmp/pg_bigm
+          make -C /tmp/pg_bigm USE_PGXS=1 PG_CONFIG=/usr/lib/postgresql/18/bin/pg_config
+          sudo make -C /tmp/pg_bigm USE_PGXS=1 PG_CONFIG=/usr/lib/postgresql/18/bin/pg_config install
           sudo pg_createcluster 18 test --port $PGPORT --start -- --encoding=UTF8 --locale=C.UTF-8
           sudo -u postgres createuser -p $PGPORT -s "$USER"
 
