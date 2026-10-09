@@ -119,6 +119,8 @@ GIN index size:
 | Korean | 30.1 MB | 28.8 MB | 48.9 MB | 24.3 MB |
 | Thai | 37.6 MB | 13.7 MB | 23.4 MB | 18.8 MB |
 
+[LANGUAGES.md](LANGUAGES.md) reports, language by language, where icu_parser works well and where it falls short.
+
 200 single-word queries per language, each a word that icu_parser produced from a held-out set of titles, written in the language's own script. Recall and overmatch are measured on 250 term/title pairs per language, drawn at random from all titles that contain a query term as a substring, and labeled in [bench/labels.csv](bench/labels.csv) as a real word match or an overmatch (first pass by Claude, spot-checked; corrections welcome) (see [the labeling rule](bench/results.md#labeled-sample)):
 
 | | default parser | icu_parser | pg_trgm | pg_bigm |
