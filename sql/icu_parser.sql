@@ -1,4 +1,6 @@
-CREATE EXTENSION icu_parser;
+SET client_min_messages = warning;
+CREATE EXTENSION IF NOT EXISTS icu_parser;
+RESET client_min_messages;
 
 SELECT alias, description FROM ts_token_type('icu') ORDER BY tokid;
 
@@ -20,3 +22,6 @@ INSERT INTO icu_names VALUES ('東京駅前ラーメン店'), ('Blue Bottle Coff
 CREATE INDEX ON icu_names USING gin (to_tsvector('icu_simple', name));
 SET enable_seqscan = off;
 SELECT name FROM icu_names WHERE to_tsvector('icu_simple', name) @@ plainto_tsquery('icu_simple', 'ラーメン');
+
+RESET enable_seqscan;
+DROP TABLE icu_names;

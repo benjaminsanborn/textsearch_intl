@@ -1,4 +1,6 @@
-CREATE EXTENSION icu_parser;
+SET client_min_messages = warning;
+CREATE EXTENSION IF NOT EXISTS icu_parser;
+RESET client_min_messages;
 SELECT alias, description FROM ts_token_type('icu') ORDER BY tokid;
  alias  |          description           
 --------+--------------------------------
@@ -83,3 +85,5 @@ SELECT name FROM icu_names WHERE to_tsvector('icu_simple', name) @@ plainto_tsqu
  東京駅前ラーメン店
 (1 row)
 
+RESET enable_seqscan;
+DROP TABLE icu_names;

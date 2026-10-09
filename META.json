@@ -36,13 +36,13 @@
     "url": "https://pgxn.org/meta/spec.txt"
   },
   "resources": {
-    "homepage": "https://github.com/benjaminsanborn/pg_icu_parser",
+    "homepage": "https://github.com/benjaminsanborn/icu_parser",
     "bugtracker": {
-      "web": "https://github.com/benjaminsanborn/pg_icu_parser/issues"
+      "web": "https://github.com/benjaminsanborn/icu_parser/issues"
     },
     "repository": {
-      "url": "https://github.com/benjaminsanborn/pg_icu_parser.git",
-      "web": "https://github.com/benjaminsanborn/pg_icu_parser",
+      "url": "https://github.com/benjaminsanborn/icu_parser.git",
+      "web": "https://github.com/benjaminsanborn/icu_parser",
       "type": "git"
     }
   }

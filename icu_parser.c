@@ -3,11 +3,13 @@
 #include "fmgr.h"
 #include "mb/pg_wchar.h"
 #include "tsearch/ts_public.h"
+#include "utils/builtins.h"
 #include "utils/memutils.h"
 
 #include <unicode/ubrk.h>
 #include <unicode/utext.h>
 #include <unicode/uversion.h>
+#include <unicode/uchar.h>
 
 PG_MODULE_MAGIC;
 
@@ -28,10 +30,17 @@ typedef struct IcuParserState
 	int32		start;
 	UText	   *text;
 	UBreakIterator *iter;
+	bool		owns_iter;
 	MemoryContextCallback cleanup;
 } IcuParserState;
 
-static UBreakIterator *template_iter = NULL;
+/*
+ * One iterator is reused for every document in the backend: setting new text
+ * on it is much cheaper than cloning, which redoes per-script setup (about
+ * 14 µs per document for Hangul).
+ */
+static UBreakIterator *shared_iter = NULL;
+static bool shared_iter_in_use = false;
 
 static void
 check_icu(UErrorCode status, const char *what)
@@ -46,8 +55,10 @@ close_icu(void *arg)
 {
 	IcuParserState *state = (IcuParserState *) arg;
 
-	if (state->iter)
+	if (state->iter && state->owns_iter)
 		ubrk_close(state->iter);
+	else if (state->iter)
+		shared_iter_in_use = false;
 	if (state->text)
 		utext_close(state->text);
 	state->iter = NULL;
@@ -68,9 +79,9 @@ icu_prsstart(PG_FUNCTION_ARGS)
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("icu_parser requires a UTF8 database")));
 
-	if (template_iter == NULL)
+	if (shared_iter == NULL)
 	{
-		template_iter = ubrk_open(UBRK_WORD, "", NULL, 0, &status);
+		shared_iter = ubrk_open(UBRK_WORD, "", NULL, 0, &status);
 		check_icu(status, "ubrk_open");
 	}
 
@@ -82,12 +93,21 @@ icu_prsstart(PG_FUNCTION_ARGS)
 
 	state->text = utext_openUTF8(NULL, buf, len, &status);
 	check_icu(status, "utext_openUTF8");
+	if (shared_iter_in_use)
+	{
 #if U_ICU_VERSION_MAJOR_NUM >= 69
-	state->iter = ubrk_clone(template_iter, &status);
+		state->iter = ubrk_clone(shared_iter, &status);
 #else
-	state->iter = ubrk_safeClone(template_iter, NULL, NULL, &status);
+		state->iter = ubrk_safeClone(shared_iter, NULL, NULL, &status);
 #endif
-	check_icu(status, "ubrk_clone");
+		check_icu(status, "ubrk_clone");
+		state->owns_iter = true;
+	}
+	else
+	{
+		state->iter = shared_iter;
+		shared_iter_in_use = true;
+	}
 	ubrk_setUText(state->iter, state->text, &status);
 	check_icu(status, "ubrk_setUText");
 	state->start = ubrk_first(state->iter);
@@ -155,4 +175,16 @@ icu_prslextype(PG_FUNCTION_ARGS)
 	set_lexdescr(&descr[4], ICU_IDEO, "ideo", "Ideographic word");
 
 	PG_RETURN_POINTER(descr);
+}
+
+PG_FUNCTION_INFO_V1(icu_parser_icu_version);
+Datum
+icu_parser_icu_version(PG_FUNCTION_ARGS)
+{
+	UVersionInfo version;
+	char		buf[U_MAX_VERSION_STRING_LENGTH];
+
+	u_getVersion(version);
+	u_versionToString(version, buf);
+	PG_RETURN_TEXT_P(cstring_to_text(buf));
 }

@@ -1,0 +1,202 @@
+SET client_min_messages = warning;
+CREATE EXTENSION IF NOT EXISTS icu_parser;
+CREATE FUNCTION tokens(doc text) RETURNS TABLE (alias text, token text)
+LANGUAGE sql AS $$
+  SELECT t.alias, p.token
+  FROM ts_parse('icu', doc) p
+  JOIN ts_token_type('icu') t ON t.tokid = p.tokid
+  WHERE t.alias <> 'blank'
+$$;
+-- Chinese, simplified and traditional
+SELECT * FROM tokens('北京大学图书馆');
+ alias | token 
+-------+-------
+ ideo  | 北京
+ ideo  | 大学
+ ideo  | 图书
+ ideo  | 馆
+(4 rows)
+
+SELECT * FROM tokens('國立臺灣大學');
+ alias |  token   
+-------+----------
+ ideo  | 國立
+ ideo  | 臺灣大學
+(2 rows)
+
+-- Japanese: kanji, hiragana, katakana, mixed
+SELECT * FROM tokens('東京駅前ラーメン店');
+ alias |  token   
+-------+----------
+ ideo  | 東京
+ ideo  | 駅前
+ ideo  | ラーメン
+ ideo  | 店
+(4 rows)
+
+SELECT * FROM tokens('すし屋で寿司を食べました');
+ alias | token 
+-------+-------
+ ideo  | すし
+ ideo  | 屋
+ ideo  | で
+ ideo  | 寿司
+ ideo  | を
+ ideo  | 食
+ ideo  | べ
+ ideo  | ま
+ ideo  | した
+(9 rows)
+
+SELECT * FROM tokens('セブンイレブン');
+ alias |  token   
+-------+----------
+ ideo  | セブン
+ ideo  | イレブン
+(2 rows)
+
+-- Korean is space-separated
+SELECT * FROM tokens('서울특별시 강남구 테헤란로');
+ alias |   token    
+-------+------------
+ word  | 서울특별시
+ word  | 강남구
+ word  | 테헤란로
+(3 rows)
+
+-- Southeast Asian scripts without spaces
+SELECT * FROM tokens('ร้านกาแฟสด');
+ alias | token 
+-------+-------
+ word  | ร้าน
+ word  | กาแฟ
+ word  | สด
+(3 rows)
+
+SELECT * FROM tokens('ຂ້ອຍຮັກເຈົ້າຫຼາຍ');
+ alias | token 
+-------+-------
+ word  | ຂ້ອຍ
+ word  | ຮັກ
+ word  | ເຈົ້າ
+ word  | ຫຼາຍ
+(4 rows)
+
+SELECT * FROM tokens('ខ្ញុំស្រលាញ់អ្នកណាស់');
+ alias | token 
+-------+-------
+ word  | ខ្ញុំ
+ word  | ស្រលាញ់
+ word  | អ្នក
+ word  | ណាស់
+(4 rows)
+
+SELECT * FROM tokens('ကျွန်တော်မြန်မာစာသင်နေတယ်');
+ alias | token  
+-------+--------
+ word  | ကျွန်တော်
+ word  | မြန်မာ
+ word  | စာသင်
+ word  | နေ
+ word  | တယ်
+(5 rows)
+
+-- Right-to-left and other alphabets
+SELECT * FROM tokens('שלום עולם צה״ל');
+ alias | token 
+-------+-------
+ word  | שלום
+ word  | עולם
+ word  | צה״ל
+(3 rows)
+
+SELECT * FROM tokens('مطعم الشام');
+ alias | token 
+-------+-------
+ word  | مطعم
+ word  | الشام
+(2 rows)
+
+SELECT * FROM tokens('नई दिल्ली');
+ alias | token 
+-------+-------
+ word  | नई
+ word  | दिल्ली
+(2 rows)
+
+SELECT * FROM tokens('Москва Αθήνα Hà Nội');
+ alias | token  
+-------+--------
+ word  | Москва
+ word  | Αθήνα
+ word  | Hà
+ word  | Nội
+(4 rows)
+
+-- Mixed scripts, full-width forms, combining marks, emoji
+SELECT * FROM tokens('iPhone手机壳');
+ alias | token  
+-------+--------
+ word  | iPhone
+ ideo  | 手机
+ ideo  | 壳
+(3 rows)
+
+SELECT * FROM tokens('ＡＢＣ１２３');
+ alias  |    token     
+--------+--------------
+ number | ＡＢＣ１２３
+(1 row)
+
+SELECT * FROM tokens(U&'Cafe\0301 cafe');
+ alias | token 
+-------+-------
+ word  | Café
+ word  | cafe
+(2 rows)
+
+SELECT * FROM tokens(U&'pizza \D83C\DF55 \D83D\DC68\200D\D83D\DC69\200D\D83D\DC67 bar');
+ alias | token 
+-------+-------
+ word  | pizza
+ word  | bar
+(2 rows)
+
+-- Numbers, punctuation inside words
+SELECT * FROM tokens('1,000.50 3.14 -5 1e10 v1.2.3 24/7');
+ alias  |  token   
+--------+----------
+ number | 1,000.50
+ number | 3.14
+ number | 5
+ number | 1e10
+ number | v1.2.3
+ number | 24
+ number | 7
+(7 rows)
+
+SELECT * FROM tokens('McDonald''s rock''n''roll 7-Eleven U.S.A. AT&T');
+ alias  |    token    
+--------+-------------
+ word   | McDonald's
+ word   | rock'n'roll
+ number | 7
+ word   | Eleven
+ word   | U.S.A
+ word   | AT
+ word   | T
+(7 rows)
+
+SELECT * FROM tokens('info@example.com https://example.com/a?b=c');
+ alias |    token    
+-------+-------------
+ word  | info
+ word  | example.com
+ word  | https
+ word  | example.com
+ word  | a
+ word  | b
+ word  | c
+(7 rows)
+
+DROP FUNCTION tokens(text);

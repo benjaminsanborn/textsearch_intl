@@ -37,3 +37,38 @@ jobs:
       - name: Show regression diffs
         if: failure()
         run: cat regression.diffs || true
+
+  bench:
+    runs-on: ubuntu-24.04
+    env:
+      PGHOST: /var/run/postgresql
+      PGPORT: 5499
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install PostgreSQL 18 and pg_bigm
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-common
+          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+          sudo apt-get install -y postgresql-18 postgresql-server-dev-18 postgresql-18-pg-bigm libicu-dev pkg-config
+          sudo pg_createcluster 18 test --port $PGPORT --start -- --encoding=UTF8 --locale=C.UTF-8
+          sudo -u postgres createuser -p $PGPORT -s "$USER"
+
+      - name: Build
+        run: |
+          make PG_CONFIG=/usr/lib/postgresql/18/bin/pg_config
+          sudo make install PG_CONFIG=/usr/lib/postgresql/18/bin/pg_config
+
+      - name: Benchmark smoke run
+        env:
+          BENCH_SAMPLE: 20000
+          BENCH_RUNS: 1
+          BENCH_LANGS: th ko
+          BENCH_OUT: smoke.md
+        run: |
+          export PATH=/usr/lib/postgresql/18/bin:$PATH
+          ./bench/run.sh
+          cat smoke.md
+          grep -q '| th | 200 | icu_parser |' smoke.md
+          grep -q '| ko | 200 | pg_bigm |' smoke.md
