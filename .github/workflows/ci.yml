@@ -7,6 +7,9 @@ on:
 jobs:
   test:
     runs-on: ubuntu-24.04
+    env:
+      PGHOST: /var/run/postgresql
+      PGPORT: 5499
     strategy:
       fail-fast: false
       matrix:
@@ -20,8 +23,8 @@ jobs:
           sudo apt-get install -y postgresql-common
           sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
           sudo apt-get install -y postgresql-${{ matrix.pg }} postgresql-server-dev-${{ matrix.pg }} libicu-dev pkg-config
-          sudo pg_createcluster ${{ matrix.pg }} test --start -- --encoding=UTF8 --locale=C.UTF-8
-          sudo -u postgres createuser -s "$USER"
+          sudo pg_createcluster ${{ matrix.pg }} test --port $PGPORT --start -- --encoding=UTF8 --locale=C.UTF-8
+          sudo -u postgres createuser -p $PGPORT -s "$USER"
 
       - name: Build
         run: |
@@ -29,9 +32,7 @@ jobs:
           sudo make install PG_CONFIG=/usr/lib/postgresql/${{ matrix.pg }}/bin/pg_config
 
       - name: Test
-        run: |
-          PGPORT=$(pg_lsclusters -h | awk '$1 == "${{ matrix.pg }}" && $2 == "test" {print $3}')
-          make installcheck PG_CONFIG=/usr/lib/postgresql/${{ matrix.pg }}/bin/pg_config PGPORT=$PGPORT PGHOST=/var/run/postgresql
+        run: make installcheck PG_CONFIG=/usr/lib/postgresql/${{ matrix.pg }}/bin/pg_config
 
       - name: Show regression diffs
         if: failure()
