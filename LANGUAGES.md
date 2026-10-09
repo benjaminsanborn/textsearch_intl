@@ -10,13 +10,13 @@ The evidence comes from three places:
 
 ## Summary
 
-| Language | Verdict | Benchmark recall (default → textsearch_intl) | textsearch_intl overmatch | Main weakness |
+| Language | Verdict | Benchmark recall (default → intl_search → intl_search_ngram) | Overmatch (intl_search / ngram) | Main weakness |
 |---|---|--:|--:|---|
-| Chinese | **Good** | 10% → 93% | 16% | Transliterated names split into single characters; some compounds stay whole |
-| Japanese | **Good for kanji and katakana** | 7% → 86% | 20% | Hiragana words split into syllables; compounds; half-width kana |
-| Thai | **Usable** | 5% → 79% | 44% | Unknown names and loanwords break unpredictably |
+| Chinese | **Good** | 10% → 93% → 99% | 16% / 18% | Transliterated names split into single characters; some compounds stay whole |
+| Japanese | **Good for kanji and katakana** | 7% → 86% → 98% | 20% / 53% | Hiragana words split into syllables; compounds; half-width kana |
+| Thai | **Usable** | 5% → 79% → 79% | 44% / 44% | Unknown names and loanwords break unpredictably |
 | Lao, Khmer, Burmese | Likely good (not benchmarked) | | | Same dictionary approach as Thai |
-| Korean | **No gain** | 47% → 48% | 1% | Particles and compound names stay attached |
+| Korean | **Good with intl_search_ngram** | 47% → 48% → 100% | 1% / 22% | intl_search alone leaves particles and compound names attached |
 | Vietnamese | No gain | | | Words span several space-separated syllables |
 | Arabic, Hebrew | No gain | | | Articles and prepositions are attached to words |
 | English and other spaced languages | Same as default | | | No stemming or compound splitting |
@@ -25,7 +25,8 @@ The evidence comes from three places:
 
 - **Query with `phraseto_tsquery`, not `plainto_tsquery`.** When ICU splits a name into pieces, a plain query requires the pieces to appear anywhere in the title, in any order. `星巴克` (Starbucks) splits into `星|巴|克`, so `plainto_tsquery` matches `克巴星餐厅`; `phraseto_tsquery` requires them adjacent and in order, and doesn't.
 - **Use the `intl_search` configuration.** It applies NFKC, accent folding and apostrophe removal to each token, so half-width katakana (`ｾﾌﾞﾝ`), full-width Latin (`ＡＢＣ`), accents (`café`, `ё`) and apostrophes (`McDonald's`) match the way users type them. It keeps the Thai and Lao vowels intact, which a plain `normalize(name, NFKC)` before tokenizing would split (`จำกัด` → `จํา|กัด`).
-- **Pair it with an n-gram index for partial words.** textsearch_intl matches whole words only. For Korean, for names ICU doesn't know, and for prefixes of CJK words, add pg_bigm (or pg_trgm for terms of three or more characters) and OR the two conditions.
+- **Use `intl_search_ngram` for Korean, Chinese and Japanese.** It adds character unigrams and bigrams for Hangul, Han and kana tokens, so a word matches inside a longer word: particles, compounds and branch names. It costs overmatch, the same as pg_bigm's, and leaves every other script as `intl_search` does.
+- **Pair it with an n-gram index for names ICU doesn't know.** Outside Hangul, Han and kana, textsearch_intl matches whole words only. For Thai fragments and partial Latin words, add pg_bigm (or pg_trgm for terms of three or more characters) and OR the two conditions.
 
 ## Chinese: good
 
@@ -44,7 +45,7 @@ pg_trgm can't use its index for one- and two-character terms, so those searches 
 Where it falls short:
 
 - **Transliterated foreign names** aren't in ICU's dictionary and come out as single characters: `朱莉娅·加布里埃莱斯基` → `朱|莉|娅|加布里|埃|莱|斯|基`, and `星巴克咖啡` → `星|巴|克|咖啡`. A phrase query still finds them, but a plain query overmatches.
-- **Some compounds stay whole.** `國際機場` (international airport, Traditional) is one token, so a search for `機場` misses it, while the Simplified `国际机场` splits into `国际|机场`. This is most of the 7% the benchmark missed.
+- **Some compounds stay whole.** `國際機場` (international airport, Traditional) is one token, so a search for `機場` misses it, while the Simplified `国际机场` splits into `国际|机场`. This is most of the 7% the benchmark missed, and `intl_search_ngram` finds it (99% recall, 18% overmatch).
 - **Traditional and Simplified characters are different text.** `麥當勞` and `麦当劳` don't match each other. Convert one way before indexing if your data mixes them.
 
 ## Japanese: good for kanji and katakana, weak for hiragana
@@ -57,6 +58,8 @@ Where it falls short:
 - **Unknown katakana names** can come out as fragments (`ンズ`, `ジョ`), which then match inside unrelated names. This is most of the 20% overmatch.
 - **Half-width katakana** (`ｾﾌﾞﾝｲﾚﾌﾞﾝ`) only matches full-width with `intl_search`, which applies NFKC.
 - **No morphology.** ICU isn't a morphological analyzer like MeCab or Kuromoji, so it won't link inflected forms or break up every compound.
+
+`intl_search_ngram` raises recall to 98% and finds words inside compounds (`駅` in `駅前`), but overmatch rises to 53%, the same as pg_bigm's, because Japanese titles are full of short kana sequences that also occur inside other words.
 
 ## Thai: usable, with noisy unknown words
 
@@ -73,14 +76,14 @@ Where it falls short:
 
 ICU has dictionaries for all three, and sentences split into words: `ຮ້ານອາຫານລາວ` → `ຮ້ານ|ອາຫານ|ລາວ`, `ភោជនីយដ្ឋានខ្មែរ` → `ភោជនីយដ្ឋាន|ខ្មែរ`, `မြန်မာစားသောက်ဆိုင်` → `မြန်မာ|စားသောက်ဆိုင်`. Expect the same weaknesses as Thai with unknown names.
 
-## Korean: no gain
+## Korean: use intl_search_ngram
 
 Korean puts spaces between phrases, but attaches particles, endings and other nouns directly to a word. ICU has no Korean dictionary, so each space-separated run is one token, exactly as with the default parser. Recall was 48% against 47% for the default parser.
 
 - **Particles:** `서울의 맛집` → `서울의|맛집`, so a search for `서울` doesn't match.
 - **Brand plus branch names:** `스타벅스안양평촌점` (Starbucks, Anyang Pyeongchon branch) is a single token. On place names, a search for `편의점` (convenience store) found 2,041 rows with textsearch_intl and 9,096 with substring search, because names like `행복한편의점` are one word.
 
-Use pg_bigm or pg_trgm for Korean, or a morphological analyzer outside Postgres (such as Elasticsearch's nori).
+`intl_search_ngram` fixes both: it indexes every Hangul syllable and syllable pair, so `서울` matches `서울의`, `편의점` matches `행복한편의점`, and `스타벅스` matches `스타벅스안양평촌점`. Recall goes to 100% with 22% overmatch, the same as pg_bigm, at a similar index size. The overmatch is the substring kind: `스타벅스` also matches `파스타벅스`. For true morphology, use an analyzer outside Postgres (such as Elasticsearch's nori).
 
 ## Vietnamese: no gain
 

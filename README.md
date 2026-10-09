@@ -142,50 +142,51 @@ The ids reuse the `default` parser's `word`, `blank` and `uint` ids, because `ts
 
 ## Performance
 
-Measured on Wikipedia article titles, which are short, name-like strings: 500,000 titles each for English, Chinese, Japanese and Korean, and 366,332 for Thai. PostgreSQL 18.4, ICU 78.3, Apple M4 Pro, one backend, median of 5 runs. Full tables and method notes are in [bench/results.md](bench/results.md).
+Measured on Wikipedia article titles, which are short, name-like strings: 500,000 titles each for English, Chinese, Japanese and Korean, and 366,332 for Thai. PostgreSQL 18.4, ICU 78.3, Apple M4 Pro, one backend, median of 5 runs. Full tables and method notes, including `intl_simple`, are in [bench/results.md](bench/results.md).
 
 Time to tokenize one title, net of the table scan:
 
-| | default parser | textsearch_intl | pg_trgm | pg_bigm |
-|---|--:|--:|--:|--:|
-| English | 0.72 µs | 0.61 µs | 1.09 µs | 0.90 µs |
-| Chinese | 0.43 µs | 1.42 µs | 0.76 µs | 0.48 µs |
-| Japanese | 0.57 µs | 1.70 µs | 1.00 µs | 0.65 µs |
-| Korean | 0.54 µs | 0.66 µs | 0.89 µs | 0.58 µs |
-| Thai | 1.08 µs | 1.67 µs | 2.17 µs | 1.42 µs |
+| | default parser | intl_search | intl_search_ngram | pg_trgm | pg_bigm |
+|---|--:|--:|--:|--:|--:|
+| English | 0.77 µs | 0.84 µs | 0.90 µs | 1.20 µs | 0.99 µs |
+| Chinese | 0.47 µs | 1.86 µs | 2.12 µs | 0.82 µs | 0.52 µs |
+| Japanese | 0.62 µs | 2.18 µs | 2.63 µs | 1.09 µs | 0.72 µs |
+| Korean | 0.59 µs | 0.89 µs | 1.26 µs | 0.96 µs | 0.62 µs |
+| Thai | 1.17 µs | 2.25 µs | 2.33 µs | 2.33 µs | 1.56 µs |
 
 GIN index size:
 
-| | default parser | textsearch_intl | pg_trgm | pg_bigm |
-|---|--:|--:|--:|--:|
-| English | 25.5 MB | 24.0 MB | 29.5 MB | 20.4 MB |
-| Chinese | 38.2 MB | 14.3 MB | 72.0 MB | 41.8 MB |
-| Japanese | 39.6 MB | 18.6 MB | 63.7 MB | 33.9 MB |
-| Korean | 30.1 MB | 28.8 MB | 48.9 MB | 24.3 MB |
-| Thai | 37.6 MB | 13.7 MB | 23.4 MB | 18.8 MB |
+| | default parser | intl_search | intl_search_ngram | pg_trgm | pg_bigm |
+|---|--:|--:|--:|--:|--:|
+| English | 25.5 MB | 23.4 MB | 23.5 MB | 29.5 MB | 20.4 MB |
+| Chinese | 38.2 MB | 14.3 MB | 18.2 MB | 72.0 MB | 41.8 MB |
+| Japanese | 39.6 MB | 18.6 MB | 20.7 MB | 63.7 MB | 33.9 MB |
+| Korean | 30.1 MB | 28.8 MB | 24.6 MB | 48.9 MB | 24.3 MB |
+| Thai | 37.6 MB | 13.7 MB | 13.7 MB | 23.4 MB | 18.8 MB |
 
 [LANGUAGES.md](LANGUAGES.md) reports, language by language, where textsearch_intl works well and where it falls short.
 
-200 single-word queries per language, each a word that textsearch_intl produced from a held-out set of titles, written in the language's own script. Recall and overmatch are measured on 250 term/title pairs per language, drawn at random from all titles that contain a query term as a substring, and labeled in [bench/labels.csv](bench/labels.csv) as a real word match or an overmatch (first pass by Claude, spot-checked; corrections welcome) (see [the labeling rule](bench/results.md#labeled-sample)):
+200 single-word queries per language, each a word that `intl_simple` produced from a held-out set of titles, written in the language's own script. Recall and overmatch are measured on 250 term/title pairs per language, drawn at random from all titles that contain a query term as a substring, and labeled in [bench/labels.csv](bench/labels.csv) as a real word match or an overmatch (first pass by Claude, spot-checked; corrections welcome) (see [the labeling rule](bench/results.md#labeled-sample)). Average time per query, recall, overmatch:
 
-| | default parser | textsearch_intl | pg_trgm | pg_bigm |
-|---|--:|--:|--:|--:|
-| Chinese | 0.03 ms, 10% recall | 0.11 ms, 93% recall, 16% overmatch | 21.7 ms, 100% recall, 18% overmatch | 0.11 ms, 100% recall, 18% overmatch |
-| Japanese | 0.04 ms, 7% recall | 0.13 ms, 86% recall, 20% overmatch | 18.7 ms, 100% recall, 54% overmatch | 0.25 ms, 100% recall, 54% overmatch |
-| Korean | 0.06 ms, 47% recall, 0% overmatch | 0.07 ms, 48% recall, 1% overmatch | 17.0 ms, 100% recall, 22% overmatch | 0.14 ms, 100% recall, 22% overmatch |
-| Thai | 0.04 ms, 5% recall | 0.28 ms, 79% recall, 44% overmatch | 16.9 ms, 100% recall, 77% overmatch | 0.97 ms, 100% recall, 77% overmatch |
+| | default parser | intl_search | intl_search_ngram | pg_trgm | pg_bigm |
+|---|--:|--:|--:|--:|--:|
+| Chinese | 0.04 ms, 10%, 0% | 0.14 ms, 93%, 16% | 0.23 ms, 99%, 18% | 23.4 ms, 100%, 18% | 0.11 ms, 100%, 18% |
+| Japanese | 0.04 ms, 7%, 0% | 0.13 ms, 86%, 20% | 0.50 ms, 98%, 53% | 19.6 ms, 100%, 54% | 0.26 ms, 100%, 54% |
+| Korean | 0.07 ms, 47%, 0% | 0.09 ms, 48%, 1% | 0.44 ms, 100%, 22% | 17.9 ms, 100%, 22% | 0.14 ms, 100%, 22% |
+| Thai | 0.04 ms, 5%, 0% | 0.29 ms, 79%, 44% | 0.28 ms, 79%, 44% | 17.1 ms, 100%, 77% | 0.98 ms, 100%, 77% |
 
-The default parser has 0% overmatch in every language. Recall rests on 204 real matches for Chinese, 115 for Japanese, 195 for Korean and 57 for Thai, so the Thai figure is good to about ±10 points.
+Recall rests on 204 real matches for Chinese, 115 for Japanese, 195 for Korean and 57 for Thai, so the Thai figure is good to about ±10 points.
 
 What this shows:
 
 - **The default parser can't find words in unspaced scripts.** It finds 5–10% of real Chinese, Japanese and Thai matches, only where the word happens to be the whole run between spaces or punctuation.
-- **textsearch_intl finds most real matches in Chinese and Japanese.** It finds 93% in Chinese and 86% in Japanese, with far less overmatch than substring search in Japanese and Thai. Most of what it misses is the term inside a dictionary compound: a search for `機場` (airport) doesn't find `國際機場` (international airport), because ICU keeps the compound as one word.
-- **Korean gains nothing from textsearch_intl.** Words are already separated by spaces, but particles and suffixes attach to nouns (`서울은`, `스타벅스커피`), and neither tokenizer splits them off. For Korean, use n-grams.
-- **ICU breaks up names it doesn't know.** Unfamiliar transliterated names come out as fragments that are real tokens (`อง`, `ซ์` in Thai; `ンズ`, `ジョ` in Japanese). Those fragments match inside unrelated names, which is where textsearch_intl's Thai and Japanese overmatch comes from. It also biases this benchmark: the query terms are drawn from textsearch_intl's own output, so they include such fragments, which nobody would search for.
+- **intl_search finds most real matches in Chinese and Japanese**, 93% and 86%, with far less overmatch than substring search in Japanese and Thai. What it misses is the term inside a dictionary compound: `機場` (airport) doesn't find `國際機場` (international airport), because ICU keeps the compound as one word.
+- **intl_search does nothing for Korean.** Particles and suffixes attach to nouns (`서울은`, `스타벅스커피`), and word segmentation doesn't split them off.
+- **intl_search_ngram closes those gaps.** Korean recall goes from 48% to 100%, Chinese from 93% to 99% and Japanese from 86% to 98%. In exchange it overmatches like the substring methods do, because inside Korean and CJK words it is a substring match. It leaves Thai, English and other scripts exactly as intl_search does.
+- **ICU breaks up names it doesn't know.** Unfamiliar transliterated names come out as fragments that are real tokens (`อง`, `ซ์` in Thai; `ンズ`, `ジョ` in Japanese). Those fragments match inside unrelated names, which is where intl_search's Thai and Japanese overmatch comes from. It also biases this benchmark: the query terms are drawn from the tokenizer's own output, so they include such fragments, which nobody would search for.
 - **The n-gram methods return every substring.** They score 100% recall by definition, and the overmatch column shows what that costs.
 - **pg_trgm can't use its index for one- and two-character terms**, which most CJK words are. It used the index for only 22 of 200 Chinese queries, and the rest scanned the table. pg_bigm gives the same results at index speed.
-- **Cost:** textsearch_intl takes about 3× the default parser's time to tokenize Chinese and Japanese, 1.5× for Thai, and about the same for Korean and English. That's still under 2 µs per title, and its index is the smallest for Chinese, Japanese and Thai.
+- **Cost:** intl_search takes 2–4× the default parser's time to tokenize Chinese, Japanese and Thai, and intl_search_ngram a little more, but both stay under 3 µs per title. Their indexes are the smallest for Chinese, Japanese and Thai, and intl_search_ngram's Korean index is the size of pg_bigm's.
 
 Reproduce with `./bench/run.sh` (needs `curl`, `psql`, pg_trgm and optionally pg_bigm). It downloads the title dumps into `bench/data/`, scores every method against `bench/labels.csv`, and writes `bench/results.md`. To label a fresh sample, for example after changing the dump or the term rules, run `psql -d textsearch_intl_bench -v per_lang=250 -f bench/pairs.sql > pairs.csv` after a run, add a `label` column, and save it as `bench/labels.csv`. `BENCH_SAMPLE`, `BENCH_RUNS`, `BENCH_LANGS` and `BENCH_DUMP` change the sample size, repetitions, languages and dump date. `LC_CTYPE` must be a UTF-8 locale, or pg_trgm treats every CJK and Thai character as a separator; the script picks `C.UTF-8` when it exists.
 
