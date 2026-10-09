@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        pg: [14, 15, 16, 17, 18]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install PostgreSQL ${{ matrix.pg }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-common
+          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+          sudo apt-get install -y postgresql-${{ matrix.pg }} postgresql-server-dev-${{ matrix.pg }} libicu-dev pkg-config
+          sudo pg_createcluster ${{ matrix.pg }} test --start -- --encoding=UTF8 --locale=C.UTF-8
+          sudo -u postgres createuser -s "$USER"
+
+      - name: Build
+        run: |
+          make PG_CONFIG=/usr/lib/postgresql/${{ matrix.pg }}/bin/pg_config
+          sudo make install PG_CONFIG=/usr/lib/postgresql/${{ matrix.pg }}/bin/pg_config
+
+      - name: Test
+        run: |
+          PGPORT=$(pg_lsclusters -h | awk '$1 == "${{ matrix.pg }}" && $2 == "test" {print $3}')
+          make installcheck PG_CONFIG=/usr/lib/postgresql/${{ matrix.pg }}/bin/pg_config PGPORT=$PGPORT PGHOST=/var/run/postgresql
+
+      - name: Show regression diffs
+        if: failure()
+        run: cat regression.diffs || true

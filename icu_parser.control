@@ -1,0 +1,4 @@
+comment = 'Text search parser that splits words with ICU word boundaries'
+default_version = '1.0'
+module_pathname = '$libdir/icu_parser'
+relocatable = true
