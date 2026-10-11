@@ -37,6 +37,10 @@ typedef struct IcuParserState
 	UText	   *text;
 	UBreakIterator *iter;
 	bool		owns_iter;
+	bool		keep_runs;
+	bool		has_pending;
+	int32		pending_end;
+	int32		pending_rule;
 	MemoryContextCallback cleanup;
 } IcuParserState;
 
@@ -71,12 +75,9 @@ close_icu(void *arg)
 	state->text = NULL;
 }
 
-PG_FUNCTION_INFO_V1(intl_prsstart);
-Datum
-intl_prsstart(PG_FUNCTION_ARGS)
+static IcuParserState *
+start_parser(char *buf, int32 len, bool keep_runs)
 {
-	char	   *buf = (char *) PG_GETARG_POINTER(0);
-	int32		len = PG_GETARG_INT32(1);
 	IcuParserState *state;
 	UErrorCode	status = U_ZERO_ERROR;
 
@@ -93,6 +94,7 @@ intl_prsstart(PG_FUNCTION_ARGS)
 
 	state = palloc0(sizeof(IcuParserState));
 	state->buf = buf;
+	state->keep_runs = keep_runs;
 	state->cleanup.func = close_icu;
 	state->cleanup.arg = state;
 	MemoryContextRegisterResetCallback(CurrentMemoryContext, &state->cleanup);
@@ -117,10 +119,87 @@ intl_prsstart(PG_FUNCTION_ARGS)
 	ubrk_setUText(state->iter, state->text, &status);
 	check_icu(status, "ubrk_setUText");
 	state->start = ubrk_first(state->iter);
-
-	PG_RETURN_POINTER(state);
+	return state;
 }
 
+PG_FUNCTION_INFO_V1(intl_prsstart);
+Datum
+intl_prsstart(PG_FUNCTION_ARGS)
+{
+	PG_RETURN_POINTER(start_parser((char *) PG_GETARG_POINTER(0),
+								   PG_GETARG_INT32(1), false));
+}
+
+PG_FUNCTION_INFO_V1(intl_runs_prsstart);
+Datum
+intl_runs_prsstart(PG_FUNCTION_ARGS)
+{
+	PG_RETURN_POINTER(start_parser((char *) PG_GETARG_POINTER(0),
+								   PG_GETARG_INT32(1), true));
+}
+
+static bool
+is_unsegmented_script(UChar32 c)
+{
+	UErrorCode	status = U_ZERO_ERROR;
+	UScriptCode script = uscript_getScript(c, &status);
+
+	if (U_FAILURE(status))
+		return false;
+	return script == USCRIPT_THAI || script == USCRIPT_LAO ||
+		script == USCRIPT_KHMER || script == USCRIPT_MYANMAR;
+}
+
+static bool
+starts_unsegmented(const char *s, int32 len)
+{
+	int32		i = 0;
+	UChar32		c;
+
+	if (len <= 0)
+		return false;
+	U8_NEXT(s, i, len, c);
+	return c >= 0 && is_unsegmented_script(c);
+}
+
+static int
+token_type(int32 rule)
+{
+	if (rule < UBRK_WORD_NONE_LIMIT)
+		return ICU_BLANK;
+	if (rule < UBRK_WORD_NUMBER_LIMIT)
+		return ICU_NUMBER;
+	if (rule < UBRK_WORD_LETTER_LIMIT)
+		return ICU_WORD;
+	if (rule < UBRK_WORD_KANA_LIMIT)
+		return ICU_KANA;
+	if (rule < UBRK_WORD_IDEO_LIMIT)
+		return ICU_IDEO;
+	return ICU_BLANK;
+}
+
+static int32
+next_segment(IcuParserState *state, int32 *rule)
+{
+	int32		end;
+
+	if (state->has_pending)
+	{
+		state->has_pending = false;
+		*rule = state->pending_rule;
+		return state->pending_end;
+	}
+	end = ubrk_next(state->iter);
+	if (end != UBRK_DONE)
+		*rule = ubrk_getRuleStatus(state->iter);
+	return end;
+}
+
+/*
+ * In keep_runs mode, adjacent Thai, Lao, Khmer and Burmese words with nothing
+ * between them come out as one token, so intl_ngram can match across the
+ * word boundaries ICU guessed.
+ */
 PG_FUNCTION_INFO_V1(intl_prsgettoken);
 Datum
 intl_prsgettoken(PG_FUNCTION_ARGS)
@@ -128,28 +207,44 @@ intl_prsgettoken(PG_FUNCTION_ARGS)
 	IcuParserState *state = (IcuParserState *) PG_GETARG_POINTER(0);
 	char	  **token = (char **) PG_GETARG_POINTER(1);
 	int		   *token_len = (int *) PG_GETARG_POINTER(2);
-	int32		end = ubrk_next(state->iter);
-	int32		rule;
+	int32		rule = 0;
+	int32		end = next_segment(state, &rule);
+	int			type;
 
 	if (end == UBRK_DONE)
 		PG_RETURN_INT32(0);
 
+	type = token_type(rule);
+	if (state->keep_runs && (type == ICU_WORD || type == ICU_NUMBER) &&
+		starts_unsegmented(state->buf + state->start, end - state->start))
+	{
+		for (;;)
+		{
+			int32		next_rule = 0;
+			int32		next_end = next_segment(state, &next_rule);
+			int			next_type;
+
+			if (next_end == UBRK_DONE)
+				break;
+			next_type = token_type(next_rule);
+			if ((next_type == ICU_WORD || next_type == ICU_NUMBER) &&
+				starts_unsegmented(state->buf + end, next_end - end))
+			{
+				end = next_end;
+				type = ICU_WORD;
+				continue;
+			}
+			state->has_pending = true;
+			state->pending_end = next_end;
+			state->pending_rule = next_rule;
+			break;
+		}
+	}
+
 	*token = state->buf + state->start;
 	*token_len = end - state->start;
 	state->start = end;
-
-	rule = ubrk_getRuleStatus(state->iter);
-	if (rule < UBRK_WORD_NONE_LIMIT)
-		PG_RETURN_INT32(ICU_BLANK);
-	if (rule < UBRK_WORD_NUMBER_LIMIT)
-		PG_RETURN_INT32(ICU_NUMBER);
-	if (rule < UBRK_WORD_LETTER_LIMIT)
-		PG_RETURN_INT32(ICU_WORD);
-	if (rule < UBRK_WORD_KANA_LIMIT)
-		PG_RETURN_INT32(ICU_KANA);
-	if (rule < UBRK_WORD_IDEO_LIMIT)
-		PG_RETURN_INT32(ICU_IDEO);
-	PG_RETURN_INT32(ICU_BLANK);
+	PG_RETURN_INT32(type);
 }
 
 PG_FUNCTION_INFO_V1(intl_prsend);
@@ -363,6 +458,68 @@ is_ngram_char(UChar32 c)
 		script == USCRIPT_KATAKANA || script == USCRIPT_HANGUL;
 }
 
+static UBreakIterator *char_iter = NULL;
+
+/*
+ * Thai, Lao, Khmer and Burmese tokens become bigrams and trigrams of grapheme
+ * clusters, so vowel and tone marks stay with their consonant.  Bigrams let a
+ * two-cluster query match inside a longer run.  Returns NULL when the token
+ * has other scripts in it or is a single cluster.
+ */
+static TSLexeme *
+cluster_trigrams(const char *in, int32 len)
+{
+	UErrorCode	status = U_ZERO_ERROR;
+	UText		text = UTEXT_INITIALIZER;
+	int32	   *starts;
+	int32		n = 0;
+	int32		i = 0;
+	int32		pos;
+	TSLexeme   *res;
+
+	while (i < len)
+	{
+		UChar32		c;
+		UScriptCode script;
+
+		U8_NEXT(in, i, len, c);
+		if (c < 0)
+			return NULL;
+		script = uscript_getScript(c, &status);
+		if (U_FAILURE(status))
+			return NULL;
+		if (script != USCRIPT_INHERITED && !is_unsegmented_script(c))
+			return NULL;
+	}
+
+	if (char_iter == NULL)
+	{
+		char_iter = ubrk_open(UBRK_CHARACTER, "", NULL, 0, &status);
+		check_icu(status, "ubrk_open");
+	}
+	utext_openUTF8(&text, in, len, &status);
+	check_icu(status, "utext_openUTF8");
+	ubrk_setUText(char_iter, &text, &status);
+	check_icu(status, "ubrk_setUText");
+
+	starts = palloc(sizeof(int32) * (len + 1));
+	for (pos = ubrk_first(char_iter); pos != UBRK_DONE; pos = ubrk_next(char_iter))
+		starts[n++] = pos;
+	utext_close(&text);
+
+	n--;
+	if (n < 2)
+		return NULL;
+
+	res = palloc0(sizeof(TSLexeme) * (2 * n - 2));
+	pos = 0;
+	for (int32 j = 0; j + 1 < n; j++)
+		res[pos++].lexeme = pnstrdup(in + starts[j], starts[j + 2] - starts[j]);
+	for (int32 j = 0; j + 2 < n; j++)
+		res[pos++].lexeme = pnstrdup(in + starts[j], starts[j + 3] - starts[j]);
+	return res;
+}
+
 PG_FUNCTION_INFO_V1(intl_ngram_init);
 Datum
 intl_ngram_init(PG_FUNCTION_ARGS)
@@ -379,7 +536,8 @@ intl_ngram_init(PG_FUNCTION_ARGS)
 
 /*
  * Returns every character and every pair of adjacent characters of a Han,
- * kana or Hangul token, all at the token's position.  A query token goes
+ * kana or Hangul token, or every three adjacent grapheme clusters of a Thai,
+ * Lao, Khmer or Burmese token, all at the token's position.  A query token goes
  * through the same expansion, and to_tsquery ANDs lexemes that share a
  * position, so a query matches any document token containing its pieces,
  * while phrase operators still order whole tokens.
@@ -400,6 +558,9 @@ intl_ngram_lexize(PG_FUNCTION_ARGS)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("intl_ngram requires a UTF8 database")));
+
+	if (starts_unsegmented(in, len))
+		PG_RETURN_POINTER(cluster_trigrams(in, len));
 
 	while (i < len)
 	{

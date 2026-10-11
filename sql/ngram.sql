@@ -1,12 +1,17 @@
 SET client_min_messages = warning;
 CREATE EXTENSION IF NOT EXISTS textsearch_intl CASCADE;
 
--- intl_ngram expands Han, kana and Hangul tokens into characters and adjacent pairs; anything else passes through
+-- intl_ngram expands Han, kana and Hangul tokens into characters and adjacent pairs, and Thai, Lao, Khmer and
+-- Burmese tokens into grapheme-cluster bigrams and trigrams; anything else passes through
 SELECT input, ts_lexize('intl_ngram', input)
-FROM (VALUES ('편의점'), ('駅'), ('東京駅'), ('ラーメン'), ('abc'), ('東京12'), ('กาแฟ')) v(input);
+FROM (VALUES ('편의점'), ('駅'), ('東京駅'), ('ラーメン'), ('abc'), ('東京12'), ('กาแฟ'), ('ร้าน'), ('ก'), ('กาแฟcoffee')) v(input);
 
 SELECT to_tsvector('intl_search_ngram', '행복한편의점 McDonald’s');
 SELECT phraseto_tsquery('intl_search_ngram', '스타벅스 안양');
+
+-- The intl_runs parser keeps each unspaced Thai, Lao, Khmer or Burmese run as one token; everything else splits as with intl
+SELECT alias, token FROM ts_debug('intl_search_ngram', 'ร้านกาแฟสด 7-Eleven ຮ້ານອາຫານລາວ 東京駅');
+SELECT ts_headline('intl_search_ngram', 'ร้านกาแฟสด อร่อย', phraseto_tsquery('intl_search_ngram', 'กาแฟ'));
 
 -- Words inside Korean and CJK tokens match; ICU word boundaries between tokens still hold
 SELECT q, name,
@@ -24,6 +29,14 @@ FROM (VALUES ('편의점', '행복한편의점'),
              ('스타벅스', '파스타벅스'),
              ('主教', '天主教'),
              ('กาแฟ', 'ร้านกาแฟสด'),
+             ('เซเว่น', 'เซเว่นอีเลฟเว่น'),
+             ('กาแฟ', 'กุ๊งกิ๊งกาแฟโบราณ'),
+             ('กาแฟ สด', 'ร้านกาแฟ สดใหม่'),
+             ('สด กาแฟ', 'ร้านกาแฟ สดใหม่'),
+             ('จำกัด', 'บริษัท จํากัด'),
+             ('ອາຫານ', 'ຮ້ານອາຫານລາວ'),
+             ('ខ្មែរ', 'ភោជនីយដ្ឋានខ្មែរ'),
+             ('စားသောက်', 'မြန်မာစားသောက်ဆိုင်'),
              ('mcdonalds', 'McDonald''s')) v(q, name);
 
 -- The dictionary takes no options

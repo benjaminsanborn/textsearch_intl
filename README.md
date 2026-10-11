@@ -4,7 +4,8 @@ Multilingual full text search for PostgreSQL, built for names and other short te
 
 - **the `intl` parser,** which splits text into words with ICU word boundaries, including Chinese, Japanese, Thai, Khmer, Lao and Burmese, which don't put spaces between words;
 - **the `intl_normalize` dictionary,** which folds character widths, decomposed accents and apostrophes;
-- **the `intl_ngram` dictionary,** which lets a search match words inside long Korean, Chinese and Japanese tokens;
+- **the `intl_runs` parser,** the same as `intl` except that it keeps each unspaced Thai, Lao, Khmer or Burmese run as one token;
+- **the `intl_ngram` dictionary,** which lets a search match words inside long Korean, Chinese and Japanese tokens and inside Thai, Lao, Khmer and Burmese runs;
 - **three ready-made configurations** that combine them.
 
 PostgreSQL's built-in `default` parser only splits on spaces and punctuation, so text in scripts written without spaces between words comes out as a single token. Chinese, Japanese, Thai, Khmer, Lao and Burmese all have this problem:
@@ -56,13 +57,13 @@ PKG_CONFIG_PATH="$(brew --prefix icu4c)/lib/pkgconfig" make PG_SYSROOT="$(xcrun 
 
 ## Usage
 
-The extension creates the parser `intl`, the dictionaries `intl_normalize` and `intl_ngram`, and three configurations:
+The extension creates the parsers `intl` and `intl_runs`, the dictionaries `intl_normalize` and `intl_ngram`, and three configurations:
 
-| Configuration | Dictionaries for each word | Use it for |
-|---|---|---|
-| `intl_search_ngram` | `intl_normalize`, `intl_ngram`, `unaccent`, `simple` | Searching names in any language, including Korean and words inside CJK compounds |
-| `intl_search` | `intl_normalize`, `unaccent`, `simple` | Whole-word search; the smallest index, and no matches inside longer Korean or CJK words |
-| `intl_simple` | `simple` | Words exactly as written, keeping accents, apostrophes and character widths |
+| Configuration | Parser | Dictionaries for each word | Use it for |
+|---|---|---|---|
+| `intl_search_ngram` | `intl_runs` | `intl_normalize`, `intl_ngram`, `unaccent`, `simple` | Searching names in any language, including Korean, words inside CJK compounds, and Thai, Lao, Khmer and Burmese names ICU doesn't know |
+| `intl_search` | `intl` | `intl_normalize`, `unaccent`, `simple` | Whole-word search; the smallest index, and no matches inside longer Korean or CJK words |
+| `intl_simple` | `intl` | `simple` | Words exactly as written, keeping accents, apostrophes and character widths |
 
 ```sql
 CREATE INDEX places_name_intl_idx ON places USING gin (to_tsvector('intl_search_ngram', name));
@@ -90,7 +91,7 @@ Prefer `phraseto_tsquery`: when ICU splits a name into several words, `plainto_t
 
 The dictionary works on the tokens ICU produced, so it can't join words ICU split: `7eleven` and `7-Eleven` still differ.
 
-### Matching inside Korean and CJK words
+### Matching inside words
 
 ICU keeps some long runs as a single token: Korean puts particles and branch names directly onto a word (`서울의`, `스타벅스안양평촌점`), and ICU's Chinese and Japanese dictionaries keep compounds whole (`中村公園店`, `駅前`). A whole-word search for `스타벅스`, `公園` or `駅` misses those.
 
@@ -101,7 +102,18 @@ SELECT phraseto_tsquery('intl_search_ngram', '스타벅스 안양');
 --  ( '스' & '타' & '벅' & '스' & '스타' & '타벅' & '벅스' ) <-> ( '안' & '양' & '안양' )
 ```
 
-So inside a single token, a search matches the way `LIKE '%…%'` does, and phrase operators still enforce word order between tokens. ICU's word boundaries still apply: `京都` doesn't match `東京|都`. The price is overmatch inside a token, the same kind substring search has everywhere: `스타벅스` also matches `파스타벅스` (a pasta restaurant), and `主教` (bishop) matches `天主教` (Catholicism). Pieces only need to appear somewhere in the token, not necessarily adjacent, so a long token can occasionally match a query whose characters it contains out of order. Tokens in other scripts pass through unchanged.
+So inside a single token, a search matches the way `LIKE '%…%'` does, and phrase operators still enforce word order between tokens. ICU's word boundaries still apply: `京都` doesn't match `東京|都`. The price is overmatch inside a token, the same kind substring search has everywhere: `스타벅스` also matches `파스타벅스` (a pasta restaurant), and `主教` (bishop) matches `天主教` (Catholicism). Pieces only need to appear somewhere in the token, not necessarily adjacent, so a long token can occasionally match a query whose characters it contains out of order. 
+Thai, Lao, Khmer and Burmese have the opposite problem: ICU splits names it doesn't know at the wrong places. `เซเว่นอีเลฟเว่น` (7-Eleven) comes out as `เซ|เว่|นอีเลฟเว่น`, so `เซเว่น` never appears as a token. The `intl_runs` parser therefore keeps each unspaced run of those scripts as one token, and `intl_ngram` turns it into every pair and every three adjacent grapheme clusters, so vowel and tone marks stay with their consonant:
+
+```sql
+SELECT ts_lexize('intl_ngram', 'กาแฟ');
+--  {กา,าแ,แฟ,กาแ,าแฟ}
+
+SELECT to_tsvector('intl_search_ngram', 'เซเว่นอีเลฟเว่น') @@ phraseto_tsquery('intl_search_ngram', 'เซเว่น');
+--  t
+```
+
+A search then matches anywhere inside a run, like `pg_trgm` does, and a single-cluster search only matches a run that is exactly that cluster. Words separated by spaces are still separate tokens for phrase queries. A run mixed with other scripts (`กาแฟcoffee`), and tokens in other scripts, pass through unchanged.
 
 Build your own configuration on the parser to add stemming or stop words:
 
@@ -182,7 +194,7 @@ What this shows:
 - **The default parser can't find words in unspaced scripts.** It finds 5–10% of real Chinese, Japanese and Thai matches, only where the word happens to be the whole run between spaces or punctuation.
 - **intl_search finds most real matches in Chinese and Japanese**, 93% and 86%, with far less overmatch than substring search in Japanese and Thai. What it misses is the term inside a dictionary compound: `機場` (airport) doesn't find `國際機場` (international airport), because ICU keeps the compound as one word.
 - **intl_search does nothing for Korean.** Particles and suffixes attach to nouns (`서울은`, `스타벅스커피`), and word segmentation doesn't split them off.
-- **intl_search_ngram closes those gaps.** Korean recall goes from 48% to 100%, Chinese from 93% to 99% and Japanese from 86% to 98%. In exchange it overmatches like the substring methods do, because inside Korean and CJK words it is a substring match. It leaves Thai, English and other scripts exactly as intl_search does.
+- **intl_search_ngram closes those gaps.** Korean recall goes from 48% to 100%, Chinese from 93% to 99% and Japanese from 86% to 98%. In exchange it overmatches like the substring methods do, because inside Korean and CJK words it is a substring match. It leaves English and other spaced scripts exactly as intl_search does.
 - **ICU breaks up names it doesn't know.** Unfamiliar transliterated names come out as fragments that are real tokens (`อง`, `ซ์` in Thai; `ンズ`, `ジョ` in Japanese). Those fragments match inside unrelated names, which is where intl_search's Thai and Japanese overmatch comes from. It also biases this benchmark: the query terms are drawn from the tokenizer's own output, so they include such fragments, which nobody would search for.
 - **The n-gram methods return every substring.** They score 100% recall by definition, and the overmatch column shows what that costs.
 - **pg_trgm can't use its index for one- and two-character terms**, which most CJK words are. It used the index for only 22 of 200 Chinese queries, and the rest scanned the table. pg_bigm gives the same results at index speed.

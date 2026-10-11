@@ -20,6 +20,11 @@ RETURNS internal
 AS 'MODULE_PATHNAME'
 LANGUAGE C STRICT;
 
+CREATE FUNCTION intl_runs_prsstart(internal, int4)
+RETURNS internal
+AS 'MODULE_PATHNAME'
+LANGUAGE C STRICT;
+
 CREATE FUNCTION intl_icu_version()
 RETURNS text
 AS 'MODULE_PATHNAME'
@@ -27,6 +32,14 @@ LANGUAGE C STRICT STABLE PARALLEL SAFE;
 
 CREATE TEXT SEARCH PARSER intl (
   START = intl_prsstart,
+  GETTOKEN = intl_prsgettoken,
+  END = intl_prsend,
+  LEXTYPES = intl_prslextype,
+  HEADLINE = pg_catalog.prsd_headline
+);
+
+CREATE TEXT SEARCH PARSER intl_runs (
+  START = intl_runs_prsstart,
   GETTOKEN = intl_prsgettoken,
   END = intl_prsend,
   LEXTYPES = intl_prslextype,
@@ -77,7 +90,7 @@ CREATE TEXT SEARCH TEMPLATE intl_ngram_template (
 
 CREATE TEXT SEARCH DICTIONARY intl_ngram (TEMPLATE = intl_ngram_template);
 
-CREATE TEXT SEARCH CONFIGURATION intl_search_ngram (PARSER = intl);
+CREATE TEXT SEARCH CONFIGURATION intl_search_ngram (PARSER = intl_runs);
 
 ALTER TEXT SEARCH CONFIGURATION intl_search_ngram
   ADD MAPPING FOR word, number, kana, ideo WITH intl_normalize, intl_ngram, unaccent, simple;
