@@ -3,21 +3,57 @@ CREATE EXTENSION IF NOT EXISTS textsearch_intl CASCADE;
 -- intl_normalize passes tokens it changes on to the next dictionary, and returns NULL for the rest
 SELECT input, ts_lexize('intl_normalize', input)
 FROM (VALUES ('plain'), ('Café'), ('McDonald''s'), ('McDonald’s'), ('ｾﾌﾞﾝ'), ('ＡＢＣ１２３'), ('㈱'),
-             (U&'\0E19\0E4D\0E32'), (U&'\0E99\0ECD\0EB2'), ('น้ำ'), ('’')) v(input);
-    input     |  ts_lexize  
---------------+-------------
+             (U&'\0E19\0E4D\0E32'), (U&'\0E99\0ECD\0EB2'), ('น้ำ'), ('’'),
+             ('ΑΘΗΝΑΣ'), ('Αθήνας'), ('Straße'), ('İstanbul'), ('Oʻahu'), ('Пʼятниця'), (U&'soft\00ADhyphen'),
+             ('أحمد'), ('مدرسة'), ('کتابی'), ('مُحَمَّد'), ('مـطـعـم'), ('٧'), ('۷'), ('๗'), ('१२३')) v(input);
+    input     |  ts_lexize   
+--------------+--------------
  plain        | 
- Café         | 
- McDonald's   | {McDonalds}
- McDonald’s   | {McDonalds}
+ Café         | {café}
+ McDonald's   | {mcdonalds}
+ McDonald’s   | {mcdonalds}
  ｾﾌﾞﾝ         | {セブン}
- ＡＢＣ１２３ | {ABC123}
+ ＡＢＣ１２３ | {abc123}
  ㈱           | {(株)}
  นํา           | {นำ}
  ນໍາ           | {ນຳ}
  น้ำ           | 
  ’            | {}
-(11 rows)
+ ΑΘΗΝΑΣ       | {αθηνασ}
+ Αθήνας       | {αθήνασ}
+ Straße       | {strasse}
+ İstanbul     | {istanbul}
+ Oʻahu        | {oahu}
+ Пʼятниця     | {пятниця}
+ soft­hyphen   | {softhyphen}
+ أحمد         | {احمد}
+ مدرسة        | {مدرسه}
+ کتابی        | {كتابي}
+ مُحَمَّد         | {محمد}
+ مـطـعـم      | {مطعم}
+ ٧            | {7}
+ ۷            | {7}
+ ๗            | {7}
+ १२३          | {123}
+(27 rows)
+
+-- An elided article or an Arabic article gives two final lexemes at the token's position: the whole word and the word without it
+SELECT input, ts_lexize('intl_normalize', input)
+FROM (VALUES ('L''Occitane'), ('l’École'), ('dell''Arte'), ('qu''il'), ('O''Reilly'), ('l''a'),
+             ('المطعم'), ('والمطعم'), ('الأهرام'), ('الف')) v(input);
+   input    |      ts_lexize       
+------------+----------------------
+ L'Occitane | {loccitane,occitane}
+ l’École    | {lecole,ecole}
+ dell'Arte  | {dellarte,arte}
+ qu'il      | {quil,il}
+ O'Reilly   | {oreilly}
+ l'a        | {la}
+ المطعم     | {المطعم,مطعم}
+ والمطعم    | {والمطعم,مطعم}
+ الأهرام    | {الاهرام,اهرام}
+ الف        | 
+(10 rows)
 
 -- intl_search chains intl_normalize, unaccent and simple (ts_debug shows only the first dictionary's output)
 SELECT to_tsvector('intl_search', 'McDonald’s Café ｾﾌﾞﾝｲﾚﾌﾞﾝ Пятёрочка ร้านอาหาร ＡＢＣ１２３');
@@ -41,22 +77,52 @@ FROM (VALUES ('mcdonalds', 'McDonald''s'),
              ('อาหาร', 'ร้านอาหาร'),
              ('अस्पताल', 'सिटी अस्पताल'),
              ('セブンイレブン', 'セブン-イレブン渋谷店'),
-             ('中国银行', '中国银行北京分行')) v(q, name);
-       q        |         name          | intl_simple | intl_search 
-----------------+-----------------------+-------------+-------------
- mcdonalds      | McDonald's            | f           | t
- mcdonalds      | McDonald’s Restaurant | f           | t
- cafe           | Café Müller           | f           | t
- café           | Cafe Central          | f           | t
- пятёрочка      | Пятерочка             | f           | t
- ラーメン       | ﾗｰﾒﾝ屋                | f           | t
- abc            | ＡＢＣストア          | f           | t
- ร้านอาหาร       | ร้านอาหารครัวไทย        | t           | t
- อาหาร          | ร้านอาหาร              | t           | t
- अस्पताल         | सिटी अस्पताल           | t           | t
- セブンイレブン | セブン-イレブン渋谷店 | t           | t
- 中国银行       | 中国银行北京分行      | t           | t
-(12 rows)
+             ('中国银行', '中国银行北京分行'),
+             ('ΑΘΗΝΑΣ', 'Αθήνας'),
+             ('athens strasse', 'Athens Straße'),
+             ('istanbul', 'İstanbul'),
+             ('oahu', 'Oʻahu Grill'),
+             ('пятниця', 'Пʼятниця'),
+             ('occitane', 'L''Occitane en Provence'),
+             ('l''occitane', 'L’Occitane'),
+             ('ecole', 'L’École des Beaux-Arts'),
+             ('مطعم', 'المطعم الكبير'),
+             ('المطعم', 'المطعم'),
+             ('احمد', 'مطعم أحمد'),
+             ('محمد', 'مُحَمَّد'),
+             ('7', '٧ ستارز'),
+             ('l''occitane', 'LOccitane'),
+             ('المطعم', 'مطعم')) v(q, name);
+       q        |          name          | intl_simple | intl_search 
+----------------+------------------------+-------------+-------------
+ mcdonalds      | McDonald's             | f           | t
+ mcdonalds      | McDonald’s Restaurant  | f           | t
+ cafe           | Café Müller            | f           | t
+ café           | Cafe Central           | f           | t
+ пятёрочка      | Пятерочка              | f           | t
+ ラーメン       | ﾗｰﾒﾝ屋                 | f           | t
+ abc            | ＡＢＣストア           | f           | t
+ ร้านอาหาร       | ร้านอาหารครัวไทย         | t           | t
+ อาหาร          | ร้านอาหาร               | t           | t
+ अस्पताल         | सिटी अस्पताल            | t           | t
+ セブンイレブン | セブン-イレブン渋谷店  | t           | t
+ 中国银行       | 中国银行北京分行       | t           | t
+ ΑΘΗΝΑΣ         | Αθήνας                 | f           | t
+ athens strasse | Athens Straße          | f           | t
+ istanbul       | İstanbul               | t           | t
+ oahu           | Oʻahu Grill            | f           | t
+ пятниця        | Пʼятниця               | f           | t
+ occitane       | L'Occitane en Provence | f           | t
+ l'occitane     | L’Occitane             | f           | t
+ ecole          | L’École des Beaux-Arts | f           | t
+ مطعم           | المطعم الكبير          | f           | t
+ المطعم         | المطعم                 | t           | t
+ احمد           | مطعم أحمد              | f           | t
+ محمد           | مُحَمَّد                   | f           | t
+ 7              | ٧ ستارز                | f           | t
+ l'occitane     | LOccitane              | f           | f
+ المطعم         | مطعم                   | f           | f
+(27 rows)
 
 -- Headlines keep the original text
 SELECT ts_headline('intl_search', 'McDonald’s Café, Zürich', phraseto_tsquery('intl_search', 'mcdonalds cafe'));

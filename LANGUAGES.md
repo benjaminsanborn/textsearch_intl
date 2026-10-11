@@ -14,17 +14,18 @@ The evidence comes from three places:
 |---|---|--:|--:|---|
 | Chinese | **Good** | 10% → 93% → 99% | 16% / 18% | Transliterated names split into single characters; some compounds stay whole |
 | Japanese | **Good for kanji and katakana** | 7% → 86% → 98% | 20% / 53% | Hiragana words split into syllables; compounds; half-width kana |
-| Thai | **Usable** | 5% → 79% → 79% | 44% / 44% | Unknown names and loanwords break unpredictably |
+| Thai | **Good with intl_search_ngram** | 5% → 79% → 98% | 44% / 69% | intl_search alone splits unknown names and loanwords unpredictably |
 | Lao, Khmer, Burmese | Likely good (not benchmarked) | | | Same dictionary approach as Thai |
 | Korean | **Good with intl_search_ngram** | 47% → 48% → 100% | 1% / 22% | intl_search alone leaves particles and compound names attached |
 | Vietnamese | No gain | | | Words span several space-separated syllables |
-| Arabic, Hebrew | No gain | | | Articles and prepositions are attached to words |
+| Arabic | Better with `intl_search` | | | Prepositions other than `و` stay attached |
+| Hebrew | No gain | | | Articles and prepositions are attached to words |
 | English and other spaced languages | Same as default | | | No stemming or compound splitting |
 
 ## Advice that applies to every language
 
 - **Query with `phraseto_tsquery`, not `plainto_tsquery`.** When ICU splits a name into pieces, a plain query requires the pieces to appear anywhere in the title, in any order. `星巴克` (Starbucks) splits into `星|巴|克`, so `plainto_tsquery` matches `克巴星餐厅`; `phraseto_tsquery` requires them adjacent and in order, and doesn't.
-- **Use the `intl_search` configuration.** It applies NFKC, accent folding and apostrophe removal to each token, so half-width katakana (`ｾﾌﾞﾝ`), full-width Latin (`ＡＢＣ`), accents (`café`, `ё`) and apostrophes (`McDonald's`) match the way users type them. It keeps the Thai and Lao vowels intact, which a plain `normalize(name, NFKC)` before tokenizing would split (`จำกัด` → `จํา|กัด`).
+- **Use the `intl_search` configuration.** It applies NFKC, case folding, accent folding and apostrophe removal to each token, so half-width katakana (`ｾﾌﾞﾝ`), full-width Latin (`ＡＢＣ`), case (`ΑΘΗΝΑΣ`, `STRASSE`), accents (`café`, `ё`), apostrophes (`McDonald's`, `Oʻahu`), Arabic letter variants (`أحمد`) and non-ASCII digits (`٧`) match the way users type them. It also indexes French and Italian words with and without an elided article (`L'Occitane` and `occitane`), and Arabic words with and without the article. It keeps the Thai and Lao vowels intact, which a plain `normalize(name, NFKC)` before tokenizing would split (`จำกัด` → `จํา|กัด`).
 - **Use `intl_search_ngram` for Korean, Chinese and Japanese.** It adds character unigrams and bigrams for Hangul, Han and kana tokens, so a word matches inside a longer word: particles, compounds and branch names. It costs overmatch, the same as pg_bigm's, and leaves every other script as `intl_search` does.
 - **Pair it with an n-gram index for names ICU doesn't know.** Outside Hangul, Han and kana, textsearch_intl matches whole words only. For Thai fragments and partial Latin words, add pg_bigm (or pg_trgm for terms of three or more characters) and OR the two conditions.
 
@@ -61,7 +62,7 @@ Where it falls short:
 
 `intl_search_ngram` raises recall to 98% and finds words inside compounds (`駅` in `駅前`), but overmatch rises to 53%, the same as pg_bigm's, because Japanese titles are full of short kana sequences that also occur inside other words.
 
-## Thai: usable, with noisy unknown words
+## Thai: use intl_search_ngram
 
 Recall goes from 5% to 79%, at 44% overmatch against 77% for substring search. Dictionary words split cleanly: `ร้านกาแฟสด` → `ร้าน|กาแฟ|สด`, `โรงพยาบาลกรุงเทพ` → `โรง|พยาบาล|กรุงเทพ`. On place names, textsearch_intl found 39,019 rows for `กาแฟ` (coffee) against 3,808 for the default parser and 40,492 for substring search.
 
@@ -71,6 +72,8 @@ Where it falls short:
 - **Loanwords split differently depending on what follows them.** `เซเว่น` (Seven) on its own is `เซ|เว่น`, but in `เซเว่นอีเลฟเว่น` (7-Eleven) it's `เซ|เว่|นอีเลฟเว่น`, so a search for `เซเว่น` doesn't find the full brand name. On place names, textsearch_intl found 2,094 rows against 3,794 for substring search.
 - **Thai followed directly by Latin letters stays joined:** `ร้านกาแฟcoffee` → `ร้าน|กาแฟcoffee`.
 - **Fragments overmatch.** Short fragments like `อง` and `ซ์` come out of unknown names as tokens and match inside unrelated words.
+
+`intl_search_ngram` avoids ICU's guesses: its `intl_runs` parser keeps each unspaced Thai run whole and indexes every pair and every three adjacent grapheme clusters, so `เซเว่น` finds `เซเว่นอีเลฟเว่น` and `กาแฟ` finds `กุ๊งกิ๊งกาแฟโบราณ`. Recall goes to 98% at 69% overmatch, against 77% for substring search; the overmatch is high on this benchmark because its query terms include ICU fragments like `อง`. The index is about three times `intl_search`'s for Thai text.
 
 ## Lao, Khmer, Burmese: likely good, not benchmarked
 
@@ -89,15 +92,18 @@ Korean puts spaces between phrases, but attaches particles, endings and other no
 
 Vietnamese writes each syllable separately, and most words are two or more syllables. ICU splits at every space, like the default parser: `Nhà hàng Phở Hà Nội` → `Nhà|hàng|Phở|Hà|Nội`. Use `phraseto_tsquery` so `Hà Nội` matches as a unit, and the `unaccent` dictionary if users type without diacritics.
 
-## Arabic and Hebrew: no gain
+## Arabic: better with intl_search; Hebrew: no gain
 
-Spaces separate words, but the article and some prepositions and conjunctions are written as part of the word. `المطعم` (the restaurant) is one token, so a search for `مطعم` (restaurant) misses it, and `وبالمطعم` (and in the restaurant) is one token too. Hebrew does the same with `המסעדה` against `מסעדה`. Neither textsearch_intl nor the default parser removes these prefixes.
+Spaces separate words, but the article and some prepositions and conjunctions are written as part of the word. `intl_search` indexes a word that starts with the article `ال` or `وال` both with and without it, so a search for `مطعم` (restaurant) finds `المطعم` (the restaurant). It also folds the letter variants people type interchangeably in names (`أحمد` and `احمد`, `مدرسة` and `مدرسه`, Persian `ی` and `ک`) and removes short-vowel marks. Other prefixes stay attached: `بالمطعم` (in the restaurant) is one token, and a word that merely starts with `ال` (`الله`) also gets the shortened form, a small source of overmatch.
+
+Hebrew does the same with `המסעדה` against `מסעדה`, and textsearch_intl doesn't remove Hebrew prefixes.
 
 ## English and other spaced languages: same as the default parser
 
 For English, Russian, Greek, Hindi, German, Turkish and other languages that separate words with spaces, ICU's splits match the default parser's, and tokenizing English is slightly faster (0.63 µs against 0.73 µs per title). Search results were the same within 0.5%: `starbucks` found 54,395 place names with textsearch_intl and 54,352 with the default parser. Differences in detail:
 
-- **Apostrophes stay inside the word:** `McDonald's` is one token, `mcdonald's`, so a search for `mcdonalds` or `mcdonald` doesn't match it. The default parser splits it into `mcdonald|s` instead. `intl_search` removes the apostrophe, so `mcdonalds` matches.
+- **Apostrophes stay inside the word:** `McDonald's` is one token, `mcdonald's`, so a search for `mcdonalds` or `mcdonald` doesn't match it. The default parser splits it into `mcdonald|s` instead. `intl_search` removes the apostrophe, so `mcdonalds` matches, and indexes French and Italian elisions both ways, so `occitane` finds `L'Occitane`.
+- **Case folds fully:** `intl_search` uses Unicode case folding rather than the database's `lower()`, so Greek final sigma (`ΑΘΗΝΑΣ`, `Αθήνας`), German `ß` (`STRASSE`) and Turkish `İ` match.
 - **Hyphens and ampersands split:** `7-Eleven` → `7|eleven`, `co-op` → `co|op`, `AT&T` → `at|t`.
 - **URLs and hostnames stay whole:** `www.example.com` is one token.
 - **No stemming or compound splitting.** `Kaffeehaus` doesn't match `haus`. For stemming, map `word` to a Snowball dictionary: `ALTER TEXT SEARCH CONFIGURATION my_config ALTER MAPPING FOR word WITH english_stem`.

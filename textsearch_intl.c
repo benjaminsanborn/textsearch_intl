@@ -16,6 +16,7 @@
 #include <unicode/utext.h>
 #include <unicode/uversion.h>
 #include <unicode/uchar.h>
+#include <unicode/utrans.h>
 
 PG_MODULE_MAGIC;
 
@@ -290,111 +291,244 @@ intl_icu_version(PG_FUNCTION_ARGS)
 	PG_RETURN_TEXT_P(cstring_to_text(buf));
 }
 
-/*
- * NFKC splits the Thai and Lao vowel sara am into nikhahit + sara aa, which
- * ICU's dictionaries don't recognize, so the pair is recombined afterwards.
- */
-static int32
-recombine_and_strip(UChar *buf, int32 len)
+static bool
+is_apostrophe(UChar32 c)
 {
-	int32		out = 0;
-
-	for (int32 i = 0; i < len; i++)
+	switch (c)
 	{
-		UChar		c = buf[i];
-
-		if (c == 0x0027 || c == 0x2019)
-			continue;
-		if (i + 1 < len && c == 0x0E4D && buf[i + 1] == 0x0E32)
-		{
-			buf[out++] = 0x0E33;
-			i++;
-			continue;
-		}
-		if (i + 1 < len && c == 0x0ECD && buf[i + 1] == 0x0EB2)
-		{
-			buf[out++] = 0x0EB3;
-			i++;
-			continue;
-		}
-		buf[out++] = c;
+		case 0x0027:
+		case 0x0060:
+		case 0x00B4:
+		case 0x02BB:
+		case 0x02BC:
+		case 0x2018:
+		case 0x2019:
+		case 0x201B:
+		case 0x2032:
+		case 0xFF07:
+			return true;
 	}
+	return false;
+}
+
+static UChar *
+utf8_to_utf16(const char *in, int32 len, int32 *out_len)
+{
+	UErrorCode	status = U_ZERO_ERROR;
+	UChar	   *out;
+
+	u_strFromUTF8(NULL, 0, out_len, in, len, &status);
+	if (status != U_BUFFER_OVERFLOW_ERROR && status != U_STRING_NOT_TERMINATED_WARNING)
+		check_icu(status, "u_strFromUTF8");
+	status = U_ZERO_ERROR;
+	out = palloc(sizeof(UChar) * (*out_len + 1));
+	u_strFromUTF8(out, *out_len + 1, NULL, in, len, &status);
+	check_icu(status, "u_strFromUTF8");
 	return out;
 }
 
 static char *
-normalize_token(const char *in, int32 len)
+utf16_to_utf8(const UChar *in, int32 len)
 {
 	UErrorCode	status = U_ZERO_ERROR;
-	const UNormalizer2 *nfkc;
-	UChar	   *src;
-	UChar	   *dst;
-	int32		src_len;
-	int32		dst_len;
 	int32		out_len;
 	char	   *out;
-	bool		ascii = true;
-	bool		apostrophe = false;
 
-	for (int32 i = 0; i < len; i++)
-	{
-		if ((unsigned char) in[i] >= 0x80)
-			ascii = false;
-		else if (in[i] == '\'')
-			apostrophe = true;
-	}
-	if (ascii && !apostrophe)
-		return NULL;
-	if (ascii)
-	{
-		out = palloc(len + 1);
-		out_len = 0;
-		for (int32 i = 0; i < len; i++)
-			if (in[i] != '\'')
-				out[out_len++] = in[i];
-		out[out_len] = '\0';
-		return out;
-	}
-
-	u_strFromUTF8(NULL, 0, &src_len, in, len, &status);
-	if (status != U_BUFFER_OVERFLOW_ERROR)
-		check_icu(status, "u_strFromUTF8");
+	u_strToUTF8(NULL, 0, &out_len, in, len, &status);
+	if (status != U_BUFFER_OVERFLOW_ERROR && status != U_STRING_NOT_TERMINATED_WARNING)
+		check_icu(status, "u_strToUTF8");
 	status = U_ZERO_ERROR;
-	src = palloc(sizeof(UChar) * (src_len + 1));
-	u_strFromUTF8(src, src_len + 1, NULL, in, len, &status);
-	check_icu(status, "u_strFromUTF8");
+	out = palloc(out_len + 1);
+	u_strToUTF8(out, out_len + 1, NULL, in, len, &status);
+	check_icu(status, "u_strToUTF8");
+	return out;
+}
 
-	nfkc = unorm2_getNFKCInstance(&status);
-	check_icu(status, "unorm2_getNFKCInstance");
-	if (unorm2_quickCheck(nfkc, src, src_len, &status) == UNORM_YES)
+/*
+ * Arabic and Persian letters that people type interchangeably in names: alef
+ * forms, alef maksura and Persian yeh, Persian keheh, and teh marbuta.
+ * Returns 0 for tatweel and short-vowel marks, which are dropped.
+ */
+static UChar32
+fold_arabic(UChar32 c)
+{
+	switch (c)
 	{
-		dst = src;
-		dst_len = src_len;
+		case 0x0622:
+		case 0x0623:
+		case 0x0625:
+		case 0x0671:
+			return 0x0627;
+		case 0x0649:
+		case 0x06CC:
+			return 0x064A;
+		case 0x06A9:
+			return 0x0643;
+		case 0x0629:
+			return 0x0647;
+		case 0x0640:
+		case 0x0670:
+			return 0;
+	}
+	if (c >= 0x064B && c <= 0x065F)
+		return 0;
+	return c;
+}
+
+/*
+ * Case-folds with NFKC_Casefold, which also applies NFKC and drops default
+ * ignorables (soft hyphen, zero-width joiners, variation selectors), then
+ * removes apostrophes, folds Arabic letter variants and maps every decimal
+ * digit to ASCII.  NFKC splits the Thai and Lao vowel sara am into nikhahit +
+ * sara aa, which ICU's dictionaries don't recognize, so the pair is
+ * recombined.  U+0130 becomes a plain i rather than i + combining dot.
+ */
+static UChar *
+fold_text(const UChar *src, int32 len, int32 *out_len)
+{
+	UErrorCode	status = U_ZERO_ERROR;
+	const UNormalizer2 *nfkc_cf;
+	UChar	   *pre = palloc(sizeof(UChar) * (len + 1));
+	UChar	   *norm;
+	UChar	   *out;
+	int32		pre_len = 0;
+	int32		norm_len;
+	int32		i = 0;
+	int32		n = 0;
+
+	for (int32 j = 0; j < len; j++)
+	{
+		if (is_apostrophe(src[j]))
+			continue;
+		pre[pre_len++] = src[j] == 0x0130 ? 'i' : src[j];
+	}
+
+	nfkc_cf = unorm2_getNFKCCasefoldInstance(&status);
+	check_icu(status, "unorm2_getNFKCCasefoldInstance");
+	if (unorm2_quickCheck(nfkc_cf, pre, pre_len, &status) == UNORM_YES)
+	{
+		norm = pre;
+		norm_len = pre_len;
 	}
 	else
 	{
 		status = U_ZERO_ERROR;
-		dst_len = unorm2_normalize(nfkc, src, src_len, NULL, 0, &status);
+		norm_len = unorm2_normalize(nfkc_cf, pre, pre_len, NULL, 0, &status);
 		if (status != U_BUFFER_OVERFLOW_ERROR)
 			check_icu(status, "unorm2_normalize");
 		status = U_ZERO_ERROR;
-		dst = palloc(sizeof(UChar) * (dst_len + 1));
-		unorm2_normalize(nfkc, src, src_len, dst, dst_len + 1, &status);
+		norm = palloc(sizeof(UChar) * (norm_len + 1));
+		unorm2_normalize(nfkc_cf, pre, pre_len, norm, norm_len + 1, &status);
 	}
 	check_icu(status, "unorm2_normalize");
 
-	out_len = recombine_and_strip(dst, dst_len);
-	if (out_len == src_len && (dst == src || memcmp(dst, src, sizeof(UChar) * src_len) == 0))
-		return NULL;
+	out = palloc(sizeof(UChar) * (norm_len + 1));
+	while (i < norm_len)
+	{
+		UChar32		c;
 
-	u_strToUTF8(NULL, 0, &len, dst, out_len, &status);
-	if (status != U_BUFFER_OVERFLOW_ERROR)
-		check_icu(status, "u_strToUTF8");
-	status = U_ZERO_ERROR;
-	out = palloc(len + 1);
-	u_strToUTF8(out, len + 1, NULL, dst, out_len, &status);
-	check_icu(status, "u_strToUTF8");
+		U16_NEXT(norm, i, norm_len, c);
+		if (c == 0x0E4D && i < norm_len && norm[i] == 0x0E32)
+		{
+			c = 0x0E33;
+			i++;
+		}
+		else if (c == 0x0ECD && i < norm_len && norm[i] == 0x0EB2)
+		{
+			c = 0x0EB3;
+			i++;
+		}
+		else if (is_apostrophe(c))
+			continue;
+		else if (c > 0x7F && u_charType(c) == U_DECIMAL_DIGIT_NUMBER)
+			c = '0' + u_charDigitValue(c);
+		else if (c >= 0x0622 && c <= 0x06CC)
+		{
+			c = fold_arabic(c);
+			if (c == 0)
+				continue;
+		}
+		U16_APPEND_UNSAFE(out, n, c);
+	}
+	*out_len = n;
 	return out;
+}
+
+static UTransliterator *latin_ascii = NULL;
+
+/*
+ * Folds Latin accents the way unaccent does, for lexemes that intl_normalize
+ * returns directly instead of passing on to unaccent.
+ */
+static UChar *
+fold_latin(UChar *buf, int32 *len)
+{
+	UErrorCode	status = U_ZERO_ERROR;
+	int32		capacity = *len * 4 + 16;
+	UChar	   *out = palloc(sizeof(UChar) * capacity);
+	int32		limit = *len;
+
+	if (latin_ascii == NULL)
+	{
+		latin_ascii = utrans_openU(u"Latin-ASCII", -1, UTRANS_FORWARD, NULL, 0, NULL, &status);
+		check_icu(status, "utrans_openU");
+	}
+	memcpy(out, buf, sizeof(UChar) * *len);
+	utrans_transUChars(latin_ascii, out, len, capacity, 0, &limit, &status);
+	check_icu(status, "utrans_transUChars");
+	return out;
+}
+
+static const char *const elision_prefixes[] = {
+	"l", "d", "j", "m", "n", "s", "t", "c", "qu", "jusqu", "lorsqu", "puisqu",
+	"dell", "dall", "nell", "sull", "all", "coll", "un", NULL
+};
+
+/*
+ * Returns the UTF-16 offset just past an elided French or Italian article or
+ * pronoun (l', d', qu', dell' ...), or -1.  The word after it needs at least
+ * two letters.
+ */
+static int32
+elision_end(const UChar *s, int32 len)
+{
+	char		prefix[8];
+	int32		i = 0;
+	int32		letters = 0;
+
+	while (i < len && i < 7 && s[i] < 0x80 && isalpha(s[i]))
+	{
+		prefix[i] = pg_ascii_tolower((char) s[i]);
+		i++;
+	}
+	if (i == 0 || i >= len || !is_apostrophe(s[i]))
+		return -1;
+	prefix[i] = '\0';
+	for (int32 j = i + 1; j < len; j++)
+		if (u_isalpha(s[j]))
+			letters++;
+	if (letters < 2)
+		return -1;
+	for (int32 k = 0; elision_prefixes[k]; k++)
+		if (strcmp(prefix, elision_prefixes[k]) == 0)
+			return i + 1;
+	return -1;
+}
+
+/*
+ * Returns the offset just past a leading Arabic definite article (ال or وال),
+ * or -1.  At least two letters have to remain.
+ */
+static int32
+arabic_article_end(const UChar *s, int32 len)
+{
+	int32		start = 0;
+
+	if (len >= 1 && s[0] == 0x0648)
+		start = 1;
+	if (len - start >= 4 && s[start] == 0x0627 && s[start + 1] == 0x0644)
+		return start + 2;
+	return -1;
 }
 
 PG_FUNCTION_INFO_V1(intl_normalize_init);
@@ -411,13 +545,28 @@ intl_normalize_init(PG_FUNCTION_ARGS)
 	PG_RETURN_POINTER(palloc0(1));
 }
 
+/*
+ * A filtering dictionary can only pass one lexeme on, so a token with an
+ * elided article (L'Occitane) or an Arabic article (المطعم) instead returns
+ * two final lexemes at its position, the whole word and the word without the
+ * article, already folded the way unaccent and simple would.  A query for
+ * either form then matches.
+ */
 PG_FUNCTION_INFO_V1(intl_normalize_lexize);
 Datum
 intl_normalize_lexize(PG_FUNCTION_ARGS)
 {
 	char	   *in = (char *) PG_GETARG_POINTER(1);
 	int32		len = PG_GETARG_INT32(2);
-	char	   *out;
+	UChar	   *src;
+	UChar	   *folded;
+	UChar	   *rest = NULL;
+	int32		src_len;
+	int32		folded_len;
+	int32		rest_len = 0;
+	int32		cut;
+	bool		latin = false;
+	bool		plain_ascii = true;
 	TSLexeme   *res;
 
 	if (GetDatabaseEncoding() != PG_UTF8)
@@ -425,14 +574,51 @@ intl_normalize_lexize(PG_FUNCTION_ARGS)
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("intl_normalize requires a UTF8 database")));
 
-	out = normalize_token(in, len);
-	if (out == NULL)
+	for (int32 i = 0; i < len; i++)
+		if ((unsigned char) in[i] >= 0x80 || in[i] == '\'' || in[i] == '`')
+			plain_ascii = false;
+	if (plain_ascii)
+		PG_RETURN_POINTER(NULL);
+
+	src = utf8_to_utf16(in, len, &src_len);
+	folded = fold_text(src, src_len, &folded_len);
+
+	cut = elision_end(src, src_len);
+	if (cut >= 0)
+	{
+		rest = fold_text(src + cut, src_len - cut, &rest_len);
+		latin = true;
+	}
+	else
+	{
+		cut = arabic_article_end(folded, folded_len);
+		if (cut >= 0)
+		{
+			rest = folded + cut;
+			rest_len = folded_len - cut;
+		}
+	}
+
+	if (rest != NULL)
+	{
+		if (latin)
+		{
+			folded = fold_latin(folded, &folded_len);
+			rest = fold_latin(rest, &rest_len);
+		}
+		res = palloc0(sizeof(TSLexeme) * 3);
+		res[0].lexeme = utf16_to_utf8(folded, folded_len);
+		res[1].lexeme = utf16_to_utf8(rest, rest_len);
+		PG_RETURN_POINTER(res);
+	}
+
+	if (folded_len == src_len && memcmp(folded, src, sizeof(UChar) * src_len) == 0)
 		PG_RETURN_POINTER(NULL);
 
 	res = palloc0(sizeof(TSLexeme) * 2);
-	if (*out != '\0')
+	if (folded_len > 0)
 	{
-		res[0].lexeme = out;
+		res[0].lexeme = utf16_to_utf8(folded, folded_len);
 		res[0].flags = TSL_FILTER;
 	}
 	PG_RETURN_POINTER(res);
