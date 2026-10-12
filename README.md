@@ -57,12 +57,12 @@ PKG_CONFIG_PATH="$(brew --prefix icu4c)/lib/pkgconfig" make PG_SYSROOT="$(xcrun 
 
 ## Usage
 
-The extension creates the parsers `intl` and `intl_runs`, the dictionaries `intl_normalize` and `intl_ngram`, and three configurations:
+The extension creates the parsers `intl` and `intl_runs`, the dictionaries `intl_normalize`, `intl_ngram` and `intl_join`, and three configurations:
 
 | Configuration | Parser | Dictionaries for each word | Use it for |
 |---|---|---|---|
-| `intl_search_ngram` | `intl_runs` | `intl_normalize`, `intl_ngram`, `unaccent`, `simple` | Searching names in any language, including Korean, words inside CJK compounds, and Thai, Lao, Khmer and Burmese names ICU doesn't know |
-| `intl_search` | `intl` | `intl_normalize`, `unaccent`, `simple` | Whole-word search; the smallest index, and no matches inside longer Korean or CJK words |
+| `intl_search_ngram` | `intl_runs` | `intl_normalize`, `intl_ngram`, `unaccent`, `intl_join` | Searching names in any language, including Korean, words inside CJK compounds, and Thai, Lao, Khmer and Burmese names ICU doesn't know |
+| `intl_search` | `intl` | `intl_normalize`, `unaccent`, `intl_join` | Whole-word search; the smallest index, and no matches inside longer Korean or CJK words |
 | `intl_simple` | `intl` | `simple` | Words exactly as written, keeping accents, apostrophes and character widths |
 
 ```sql
@@ -88,13 +88,38 @@ Prefer `phraseto_tsquery`: when ICU splits a name into several words, `plainto_t
 - recombines the Thai `ำ` and Lao `ຳ` vowels, which NFKC splits into two characters;
 - removes apostrophes and the letters and accents typed in their place (`'`, `’`, `‘`, `ʻ`, `ʼ`, `´`, `` ` ``, `′`), so `McDonald's` becomes `mcdonalds`, `Oʻahu` becomes `oahu` and `Пʼятниця` becomes `пятниця`;
 - folds Arabic and Persian letter variants that people type interchangeably in names (alef forms, `ى`/`ی` → `ي`, `ک` → `ك`, `ة` → `ه`) and removes short-vowel marks and tatweel, so `أحمد`, `احمد` and `مُحَمَّد`/`محمد` match;
-- maps every decimal digit to ASCII, so `٧`, `۷` and `๗` match `7`.
+- maps every decimal digit to ASCII, so `٧`, `۷` and `๗` match `7`;
+- writes hiragana as katakana (`すし` → `スシ`) and traditional Chinese characters as simplified (`麥當勞` → `麦当劳`, using ICU's `Traditional-Simplified` transliterator), so either spelling finds the other. Japanese kanji that have a simplified Chinese form are folded too (`東京` → `东京`), which only matters if you display lexemes.
 
 A word with an elided French or Italian article or pronoun (`L'Occitane`, `l’École`, `dell'Arte`) or the Arabic article (`المطعم`, `والمطعم`) gets two lexemes at its position, the whole word and the word without the article, so a search for either `L'Occitane` or `occitane`, `المطعم` or `مطعم`, finds it. A filtering dictionary can only pass one lexeme on, so for these words `intl_normalize` returns the final lexemes itself, already accent-folded like `unaccent` would, and later dictionaries don't see them. A search that includes the article still needs it in the name: `المطعم` doesn't find a name written `مطعم`.
 
-`intl_search` then strips Latin, Greek and Cyrillic accents with `unaccent` (`café` → `cafe`, `ё` → `е`) and lowercases with `simple`. `unaccent` leaves Thai tone marks and Indic vowel signs alone, which a generic "remove all combining marks" step would break. `ts_headline` still shows the original text.
+A word with a lowercase letter followed by an uppercase one (`CarrefourSA`, `McDonald's`) gets the whole word and its parts at its position, as two variants: `carrefoursa`, and `carrefour` with `sa`. A search for `carrefour` then finds `CarrefourSA`, and a search for `CarrefourSA` finds either the whole word or both parts, so `Carrefoursa` and `CARREFOURSA` still match.
 
-The dictionary works on the tokens ICU produced, so it can't join words ICU split: `7eleven` and `7-Eleven` still differ.
+`intl_search` then strips Latin, Greek and Cyrillic accents with `unaccent` (`café` → `cafe`, `ё` → `е`). `unaccent` leaves Thai tone marks and Indic vowel signs alone, which a generic "remove all combining marks" step would break. `ts_headline` still shows the original text.
+
+### Words written together or apart
+
+Names are spelled with and without spaces and dashes: `7-Eleven`, `7 Eleven`, `7Eleven`; `Sài Gòn` and `Saigon`; `Mc Donald's` and `McDonald's`.
+
+The parsers split a token where digits meet letters, so `7Eleven` gives `7` and `eleven`, the same as `7-Eleven` and `7 Eleven`, and all three find each other. `3.5km` gives `3.5` and `km`.
+
+Letters written apart and together only match if you turn on `intl_join`, the last dictionary in `intl_search` and `intl_search_ngram`. By default it just lowercases, like `simple`. With `max_length` set, when only spaces or dashes separate two words and one of them has at most `max_length` characters, it also indexes the two run together at the second word's position, as a separate variant:
+
+```sql
+ALTER TEXT SEARCH DICTIONARY intl_join (max_length = 3);
+-- then REINDEX every index built with intl_search or intl_search_ngram
+
+SELECT phraseto_tsquery('intl_search', 'Mc Donalds');
+--  'mc' <-> ( 'donalds' | 'mcdonalds' )
+```
+
+So `mcdonalds` finds `Mc Donald's`, `saigon` finds `Sài Gòn`, and `walmart` finds `Wal Mart`. Words in Chinese, Japanese, Korean, Thai, Lao, Khmer and Burmese are never joined, and neither are words separated by other punctuation (`Cafe, Shop`).
+
+It's off by default because each joined pair is a new, nearly unique lexeme. On 500,000 English Wikipedia titles the `intl_search` index grows from 23 MB to 31, 36 and 44 MB with `max_length` 2, 3 and 4, and to 64 MB when joining every pair (`max_length = 100`). Chinese grows by 10–30%.
+
+A phrase can't match across a different number of words: `Mc Donalds` doesn't find `Mcdonalds`, which has no case change to split at, and `Carrefour SA` doesn't find `CarrefourSA`, whose parts share one position. `plainto_tsquery` finds the second.
+
+`intl_join` relies on the parser telling it which token is current, so it only joins words inside `to_tsvector`, `to_tsquery` and `ts_headline` with this extension's parsers. `ts_debug` and `ts_lexize` show the lexemes without the joined word.
 
 ### Matching inside words
 
@@ -108,7 +133,7 @@ SELECT phraseto_tsquery('intl_search_ngram', '스타벅스 안양');
 ```
 
 So inside a single token, a search matches the way `LIKE '%…%'` does, and phrase operators still enforce word order between tokens. ICU's word boundaries still apply: `京都` doesn't match `東京|都`. The price is overmatch inside a token, the same kind substring search has everywhere: `스타벅스` also matches `파스타벅스` (a pasta restaurant), and `主教` (bishop) matches `天主教` (Catholicism). Pieces only need to appear somewhere in the token, not necessarily adjacent, so a long token can occasionally match a query whose characters it contains out of order. 
-Thai, Lao, Khmer and Burmese have the opposite problem: ICU splits names it doesn't know at the wrong places. `เซเว่นอีเลฟเว่น` (7-Eleven) comes out as `เซ|เว่|นอีเลฟเว่น`, so `เซเว่น` never appears as a token. The `intl_runs` parser therefore keeps each unspaced run of those scripts as one token, and `intl_ngram` turns it into every pair and every three adjacent grapheme clusters, so vowel and tone marks stay with their consonant:
+Thai, Lao, Khmer and Burmese have the opposite problem: ICU splits names it doesn't know at the wrong places. `เซเว่นอีเลฟเว่น` (7-Eleven) comes out as `เซ|เว่|นอีเลฟเว่น`, so `เซเว่น` never appears as a token. The `intl_runs` parser therefore keeps each unspaced run of those scripts as one token, and does the same for kana, since ICU's dictionary splits hiragana words (`らーめん` → `ら|ー|めん`) while keeping katakana ones whole (`ラーメン`), and `intl_ngram` turns it into every pair and every three adjacent grapheme clusters, so vowel and tone marks stay with their consonant:
 
 ```sql
 SELECT ts_lexize('intl_ngram', 'กาแฟ');
@@ -142,7 +167,7 @@ ALTER TEXT SEARCH CONFIGURATION intl_english
 
 The ids reuse the `default` parser's `word`, `blank` and `uint` ids, because `ts_headline` uses the built-in `prsd_headline`, which hardcodes those ids.
 
-`number` covers any token ICU classes as numeric, which includes mixed tokens like `v1.2.3`, `1e10` and full-width `ＡＢＣ１２３`. Chinese and Japanese words found through ICU's dictionary come out as `ideo`, kana included, so map `kana` and `ideo` together.
+A token is `number` when it starts with a digit. Tokens are split where digits meet letters, so `v1.2.3` gives `v` and `1.2.3`, and `ＡＢＣ１２３` gives `ＡＢＣ` and `１２３`. Chinese and Japanese words found through ICU's dictionary come out as `ideo`, kana included, so map `kana` and `ideo` together.
 
 ### ICU version
 
@@ -155,7 +180,7 @@ The ids reuse the `default` parser's `word`, `blank` and `uint` ids, because `ts
 - **Prefix queries are unreliable for partial CJK words.** `to_tsquery('intl_simple', 'ラー:*')` segments `ラー` into `ラ <-> ー`, which doesn't match the single lexeme `ラーメン`. Prefixes that end on a word boundary work, as do Latin prefixes.
 - **`intl_simple` doesn't normalize.** A decomposed `é` (`e` + U+0301) and a precomposed `é` give different lexemes, as do half-width and full-width forms. Use `intl_search`, or put `intl_normalize` in your own configuration.
 - **Japanese is segmented by vocabulary, not morphology.** ICU has no inflection rules, so conjugated verbs fragment: `食べました` becomes `食 / べ / ま / した`. Nouns and names, the usual search targets, segment well. For full morphological analysis, look at MeCab-based tools.
-- **Different splitting for Latin text than `default`.** ICU follows Unicode word boundary rules (UAX #29): `7-Eleven` gives `7` and `eleven`, `McDonald's` stays one token, and URLs and email addresses are not recognized as single tokens.
+- **Different splitting for Latin text than `default`.** ICU follows Unicode word boundary rules (UAX #29): `7-Eleven` gives `7` and `eleven`, `McDonald's` stays one token, and URLs and email addresses are not recognized as single tokens. This extension also splits where digits meet letters, so `1e10` gives `1`, `e` and `10`.
 
 ## Performance
 
@@ -165,21 +190,21 @@ Time to tokenize one title, net of the table scan:
 
 | | default parser | intl_search | intl_search_ngram | pg_trgm | pg_bigm |
 |---|--:|--:|--:|--:|--:|
-| English | 0.69 µs | 0.80 µs | 0.87 µs | 1.11 µs | 0.88 µs |
-| Chinese | 0.42 µs | 1.73 µs | 1.93 µs | 0.75 µs | 0.47 µs |
-| Japanese | 0.59 µs | 2.09 µs | 2.52 µs | 1.09 µs | 0.68 µs |
-| Korean | 0.57 µs | 0.90 µs | 1.28 µs | 0.93 µs | 0.60 µs |
-| Thai | 1.14 µs | 2.26 µs | 3.44 µs | 2.29 µs | 1.51 µs |
+| English | 0.75 µs | 1.00 µs | 1.08 µs | 1.22 µs | 0.93 µs |
+| Chinese | 0.46 µs | 2.11 µs | 2.33 µs | 0.77 µs | 0.48 µs |
+| Japanese | 0.60 µs | 2.37 µs | 2.66 µs | 1.02 µs | 0.66 µs |
+| Korean | 0.56 µs | 1.06 µs | 1.41 µs | 0.90 µs | 0.63 µs |
+| Thai | 1.09 µs | 2.50 µs | 3.43 µs | 2.23 µs | 1.58 µs |
 
 GIN index size:
 
 | | default parser | intl_search | intl_search_ngram | pg_trgm | pg_bigm |
 |---|--:|--:|--:|--:|--:|
-| English | 25.5 MB | 23.5 MB | 23.6 MB | 29.5 MB | 20.4 MB |
-| Chinese | 38.2 MB | 14.3 MB | 18.2 MB | 72.0 MB | 41.8 MB |
-| Japanese | 39.6 MB | 18.6 MB | 20.7 MB | 63.7 MB | 33.9 MB |
-| Korean | 30.1 MB | 28.8 MB | 24.6 MB | 48.9 MB | 24.3 MB |
-| Thai | 37.6 MB | 13.7 MB | 45.5 MB | 23.4 MB | 18.8 MB |
+| English | 25.5 MB | 23.3 MB | 23.4 MB | 29.5 MB | 20.4 MB |
+| Chinese | 38.2 MB | 13.3 MB | 17.1 MB | 72.0 MB | 41.8 MB |
+| Japanese | 39.6 MB | 18.2 MB | 20.7 MB | 63.7 MB | 33.9 MB |
+| Korean | 30.1 MB | 28.7 MB | 24.5 MB | 48.9 MB | 24.3 MB |
+| Thai | 37.6 MB | 13.6 MB | 45.5 MB | 23.4 MB | 18.8 MB |
 
 [LANGUAGES.md](LANGUAGES.md) reports, language by language, where textsearch_intl works well and where it falls short.
 
@@ -187,10 +212,10 @@ GIN index size:
 
 | | default parser | intl_search | intl_search_ngram | pg_trgm | pg_bigm |
 |---|--:|--:|--:|--:|--:|
-| Chinese | 0.03 ms, 10%, 0% | 0.10 ms, 93%, 16% | 0.18 ms, 99%, 18% | 23.4 ms, 100%, 18% | 0.14 ms, 100%, 18% |
-| Japanese | 0.04 ms, 7%, 0% | 0.17 ms, 86%, 20% | 0.54 ms, 98%, 53% | 20.1 ms, 100%, 54% | 0.33 ms, 100%, 54% |
-| Korean | 0.08 ms, 47%, 0% | 0.09 ms, 48%, 1% | 0.41 ms, 100%, 22% | 18.3 ms, 100%, 22% | 0.18 ms, 100%, 22% |
-| Thai | 0.04 ms, 5%, 0% | 0.38 ms, 79%, 44% | 0.67 ms, 98%, 69% | 17.7 ms, 100%, 77% | 1.26 ms, 100%, 77% |
+| Chinese | 0.04 ms, 10%, 0% | 0.18 ms, 93%, 16% | 0.34 ms, 99%, 18% | 23.1 ms, 100%, 18% | 0.11 ms, 100%, 18% |
+| Japanese | 0.04 ms, 7%, 0% | 0.14 ms, 86%, 20% | 0.53 ms, 100%, 54% | 19.9 ms, 100%, 54% | 0.28 ms, 100%, 54% |
+| Korean | 0.07 ms, 47%, 0% | 0.08 ms, 48%, 1% | 0.40 ms, 100%, 22% | 17.7 ms, 100%, 22% | 0.14 ms, 100%, 22% |
+| Thai | 0.04 ms, 5%, 0% | 0.29 ms, 79%, 44% | 0.59 ms, 98%, 69% | 17.2 ms, 100%, 77% | 1.09 ms, 100%, 77% |
 
 Recall rests on 204 real matches for Chinese, 115 for Japanese, 195 for Korean and 57 for Thai, so the Thai figure is good to about ±10 points.
 
@@ -199,11 +224,11 @@ What this shows:
 - **The default parser can't find words in unspaced scripts.** It finds 5–10% of real Chinese, Japanese and Thai matches, only where the word happens to be the whole run between spaces or punctuation.
 - **intl_search finds most real matches in Chinese and Japanese**, 93% and 86%, with far less overmatch than substring search in Japanese and Thai. What it misses is the term inside a dictionary compound: `機場` (airport) doesn't find `國際機場` (international airport), because ICU keeps the compound as one word.
 - **intl_search does nothing for Korean.** Particles and suffixes attach to nouns (`서울은`, `스타벅스커피`), and word segmentation doesn't split them off.
-- **intl_search_ngram closes those gaps.** Korean recall goes from 48% to 100%, Chinese from 93% to 99%, Japanese from 86% to 98% and Thai from 79% to 98%. In exchange it overmatches like the substring methods do, because inside Korean, CJK and Thai runs it is a substring match. It leaves English and other spaced scripts exactly as intl_search does.
+- **intl_search_ngram closes those gaps.** Korean recall goes from 48% to 100%, Chinese from 93% to 99%, Japanese from 86% to 100% and Thai from 79% to 98%. In exchange it overmatches like the substring methods do, because inside Korean, CJK and Thai runs it is a substring match. It leaves English and other spaced scripts exactly as intl_search does.
 - **ICU breaks up names it doesn't know.** Unfamiliar transliterated names come out as fragments that are real tokens (`อง`, `ซ์` in Thai; `ンズ`, `ジョ` in Japanese). Those fragments match inside unrelated names, which is where intl_search's Thai and Japanese overmatch comes from. It also biases this benchmark: the query terms are drawn from the tokenizer's own output, so they include such fragments, which nobody would search for.
 - **The n-gram methods return every substring.** They score 100% recall by definition, and the overmatch column shows what that costs.
 - **pg_trgm can't use its index for one- and two-character terms**, which most CJK words are. It used the index for only 22 of 200 Chinese queries, and the rest scanned the table. pg_bigm gives the same results at index speed.
-- **Cost:** intl_search takes 2–4× the default parser's time to tokenize Chinese, Japanese and Thai, and intl_search_ngram a little more (3.4 µs per Thai title). intl_search's indexes are the smallest for Chinese, Japanese and Thai. intl_search_ngram's are smaller than pg_bigm's for Chinese and Japanese and the same size for Korean, but for Thai, whose runs get both bigrams and trigrams, it is about twice the size of pg_trgm's.
+- **Cost:** intl_search takes 2–5× the default parser's time to tokenize Chinese, Japanese and Thai, and intl_search_ngram a little more (3.4 µs per Thai title). intl_search's indexes are the smallest for Chinese, Japanese and Thai. intl_search_ngram's are smaller than pg_bigm's for Chinese and Japanese and the same size for Korean, but for Thai, whose runs get both bigrams and trigrams, it is about twice the size of pg_trgm's.
 
 Reproduce with `./bench/run.sh` (needs `curl`, `psql`, pg_trgm and optionally pg_bigm). It downloads the title dumps into `bench/data/`, scores every method against `bench/labels.csv`, and writes `bench/results.md`. To label a fresh sample, for example after changing the dump or the term rules, run `psql -d textsearch_intl_bench -v per_lang=250 -f bench/pairs.sql > pairs.csv` after a run, add a `label` column, and save it as `bench/labels.csv`. `BENCH_SAMPLE`, `BENCH_RUNS`, `BENCH_LANGS` and `BENCH_DUMP` change the sample size, repetitions, languages and dump date. `LC_CTYPE` must be a UTF-8 locale, or pg_trgm treats every CJK and Thai character as a separator; the script picks `C.UTF-8` when it exists.
 

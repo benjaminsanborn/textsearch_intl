@@ -14,8 +14,8 @@ SELECT to_tsvector('intl_simple', E'line one\nline two\ttabbed');
 SELECT to_tsvector('intl_simple', 'one two one 東京 東京');
 
 -- Documents past tsvector's 16383 position limit still parse to the end
-SELECT length(v) AS lexemes, v @@ to_tsquery('intl_simple', 'w19999') AS last_word_indexed
-FROM (SELECT to_tsvector('intl_simple', string_agg('w' || i, ' ')) AS v
+SELECT length(v) AS lexemes, v @@ to_tsquery('intl_simple', 'wjjjj') AS last_word_indexed
+FROM (SELECT to_tsvector('intl_simple', string_agg('w' || translate(i::text, '0123456789', 'abcdefghij'), ' ')) AS v
       FROM generate_series(0, 19999) i) s;
 
 -- A long run of one script with no spaces

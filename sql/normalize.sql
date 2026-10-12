@@ -53,3 +53,53 @@ SELECT ts_headline('intl_search', 'McDonald’s Café, Zürich', phraseto_tsquer
 
 -- The dictionary takes no options
 CREATE TEXT SEARCH DICTIONARY intl_normalize_bad (TEMPLATE = intl_normalize_template, form = 'nfc');
+
+-- Hiragana is written as katakana and traditional Chinese characters as simplified
+SELECT input, ts_lexize('intl_normalize', input)
+FROM (VALUES ('すし'), ('らーめん'), ('ゝ'), ('麥當勞'), ('國際機場'), ('麦当劳'), ('東京駅')) v(input);
+
+-- Digits and letters are split apart, and a lowercase-to-uppercase change splits a word into parts kept at its position
+SELECT to_tsvector('intl_search', '7-Eleven 7Eleven Sài Gòn CarrefourSA Express, Shop');
+
+-- With max_length set, two words separated only by spaces or dashes, one of them at most that long, are also indexed run together
+ALTER TEXT SEARCH DICTIONARY intl_join (max_length = 3);
+SELECT to_tsvector('intl_search', '7-Eleven 7Eleven Sài Gòn CarrefourSA Express, Shop');
+ALTER TEXT SEARCH DICTIONARY intl_join (max_length = 100);
+SELECT phraseto_tsquery('intl_search', 'Seven Eleven'), phraseto_tsquery('intl_search', 'CarrefourSA');
+
+SELECT q, name,
+       to_tsvector('intl_search', name) @@ phraseto_tsquery('intl_search', q) AS intl_search,
+       to_tsvector('intl_search_ngram', name) @@ phraseto_tsquery('intl_search_ngram', q) AS intl_search_ngram,
+       to_tsvector('intl_search', name) @@ plainto_tsquery('intl_search', q) AS intl_search_and
+FROM (VALUES ('7-Eleven', '7Eleven Bangkok'),
+             ('7 eleven', '7-ELEVEN'),
+             ('7eleven', '7 Eleven'),
+             ('seveneleven', 'Seven Eleven'),
+             ('seveneleven', 'Seven-Eleven'),
+             ('Seven Eleven', 'SevenEleven'),
+             ('Seven Eleven', 'Seveneleven'),
+             ('saigon', 'Sài Gòn Coffee'),
+             ('sai gon', 'Saigon Coffee'),
+             ('mcdonalds', 'Mc Donald''s'),
+             ('McDonald''s', 'MCDONALDS'),
+             ('donalds', 'McDonald''s'),
+             ('carrefour', 'CarrefourSA'),
+             ('carrefoursa', 'Carrefour SA'),
+             ('CarrefourSA', 'Carrefoursa'),
+             ('carrefour express', 'CarrefourSA Express'),
+             ('Carrefour SA', 'CarrefourSA'),
+             ('cafe shop', 'Cafe, Shop'),
+             ('cafeshop', 'Cafe, Shop'),
+             ('макка', 'Мак-Ка'),
+             ('route66', 'Route 66 Diner'),
+             ('らーめん', 'ラーメン屋'),
+             ('ラーメン', 'らーめん一番'),
+             ('麥當勞', '麦当劳'),
+             ('麦当劳', '麥當勞台北店'),
+             ('机场', '國際機場')) v(q, name);
+
+ALTER TEXT SEARCH DICTIONARY intl_join (max_length);
+SELECT to_tsvector('intl_search', 'Mc Donald''s') @@ phraseto_tsquery('intl_search', 'mcdonalds') AS joined_by_default;
+
+-- Unknown parameters are rejected
+ALTER TEXT SEARCH DICTIONARY intl_join (min_length = 3);

@@ -2,10 +2,13 @@
 
 #include "fmgr.h"
 #include "mb/pg_wchar.h"
+#include "commands/defrem.h"
 #include "nodes/parsenodes.h"
 #include "nodes/pg_list.h"
 #include "tsearch/ts_public.h"
+#include "catalog/pg_collation.h"
 #include "utils/builtins.h"
+#include "utils/formatting.h"
 #include "utils/memutils.h"
 
 #include <unicode/ubrk.h>
@@ -17,6 +20,7 @@
 #include <unicode/uversion.h>
 #include <unicode/uchar.h>
 #include <unicode/utrans.h>
+#include <unicode/uset.h>
 
 PG_MODULE_MAGIC;
 
@@ -42,8 +46,22 @@ typedef struct IcuParserState
 	bool		has_pending;
 	int32		pending_end;
 	int32		pending_rule;
+	uint32		id;
+	uint32		seq;
+	int32		prev_word_end;
 	MemoryContextCallback cleanup;
 } IcuParserState;
+
+/*
+ * The parser publishes which token is current and whether only spaces or
+ * dashes separate it from the previous word, so intl_join, which runs on that
+ * token before the parser is asked for the next one, can add the two words
+ * run together.
+ */
+static uint32 parser_count = 0;
+static uint32 join_parser = 0;
+static uint32 join_seq = 0;
+static bool join_adjacent = false;
 
 /*
  * One iterator is reused for every document in the backend: setting new text
@@ -74,6 +92,8 @@ close_icu(void *arg)
 		utext_close(state->text);
 	state->iter = NULL;
 	state->text = NULL;
+	if (join_parser == state->id)
+		join_adjacent = false;
 }
 
 static IcuParserState *
@@ -96,6 +116,8 @@ start_parser(char *buf, int32 len, bool keep_runs)
 	state = palloc0(sizeof(IcuParserState));
 	state->buf = buf;
 	state->keep_runs = keep_runs;
+	state->id = ++parser_count;
+	state->prev_word_end = -1;
 	state->cleanup.func = close_icu;
 	state->cleanup.arg = state;
 	MemoryContextRegisterResetCallback(CurrentMemoryContext, &state->cleanup);
@@ -163,6 +185,124 @@ starts_unsegmented(const char *s, int32 len)
 	return c >= 0 && is_unsegmented_script(c);
 }
 
+/*
+ * Characters whose words ICU keeps as long dictionary or unknown runs, so a
+ * search for part of one has to match pieces of the token.  U+30FC (prolonged
+ * sound mark) is Common script but only appears inside kana words.
+ */
+static bool
+is_ngram_char(UChar32 c)
+{
+	UErrorCode	status = U_ZERO_ERROR;
+	UScriptCode script;
+
+	if (c == 0x30FC)
+		return true;
+	script = uscript_getScript(c, &status);
+	if (U_FAILURE(status))
+		return false;
+	return script == USCRIPT_HAN || script == USCRIPT_HIRAGANA ||
+		script == USCRIPT_KATAKANA || script == USCRIPT_HANGUL;
+}
+
+/*
+ * Returns the byte offset of the first switch between digits and letters of a
+ * spaced script (7Eleven, 3.5km), or -1.  Marks stay with the character before
+ * them.
+ */
+static int32
+digit_split(const char *s, int32 len)
+{
+	int32		i = 0;
+	int			prev = 0;
+
+	while (i < len)
+	{
+		int32		at = i;
+		UChar32		c;
+		int8		type;
+		int			kind;
+
+		if ((unsigned char) s[i] < 0x80)
+		{
+			c = s[i++];
+			kind = isdigit(c) ? 1 : isalpha(c) ? 2 : 0;
+			if (prev != 0 && kind != 0 && prev != kind)
+				return at;
+			prev = kind;
+			continue;
+		}
+		U8_NEXT(s, i, len, c);
+		if (c < 0)
+			return -1;
+		type = u_charType(c);
+		if (type == U_NON_SPACING_MARK || type == U_COMBINING_SPACING_MARK ||
+			type == U_ENCLOSING_MARK)
+			continue;
+		if (type == U_DECIMAL_DIGIT_NUMBER)
+			kind = 1;
+		else if (u_isalpha(c) && !is_unsegmented_script(c) && !is_ngram_char(c))
+			kind = 2;
+		else
+			kind = 0;
+		if (prev != 0 && kind != 0 && prev != kind)
+			return at;
+		prev = kind;
+	}
+	return -1;
+}
+
+static bool
+only_spaces_or_dashes(const char *s, int32 len)
+{
+	int32		i = 0;
+
+	while (i < len)
+	{
+		UChar32		c;
+
+		U8_NEXT(s, i, len, c);
+		if (c < 0 || (!u_isUWhiteSpace(c) && u_charType(c) != U_DASH_PUNCTUATION))
+			return false;
+	}
+	return true;
+}
+
+static bool
+is_kana(UChar32 c)
+{
+	UErrorCode	status = U_ZERO_ERROR;
+	UScriptCode script;
+
+	if (c == 0x30FC)
+		return true;
+	script = uscript_getScript(c, &status);
+	return U_SUCCESS(status) &&
+		(script == USCRIPT_HIRAGANA || script == USCRIPT_KATAKANA);
+}
+
+/*
+ * Returns 1 for a segment that starts with Thai, Lao, Khmer or Burmese, 2 for
+ * one that starts with kana, else 0.
+ */
+static int
+run_kind(const char *s, int32 len)
+{
+	int32		i = 0;
+	UChar32		c;
+
+	if (len <= 0)
+		return 0;
+	U8_NEXT(s, i, len, c);
+	if (c < 0)
+		return 0;
+	if (is_unsegmented_script(c))
+		return 1;
+	if (is_kana(c))
+		return 2;
+	return 0;
+}
+
 static int
 token_type(int32 rule)
 {
@@ -198,8 +338,11 @@ next_segment(IcuParserState *state, int32 *rule)
 
 /*
  * In keep_runs mode, adjacent Thai, Lao, Khmer and Burmese words with nothing
- * between them come out as one token, so intl_ngram can match across the
- * word boundaries ICU guessed.
+ * between them come out as one token, as do adjacent kana words, so
+ * intl_ngram can match across the word boundaries ICU guessed.  ICU's
+ * dictionary splits hiragana (らーめん → ら ー めん) but not katakana, so
+ * without this a hiragana spelling would not match the katakana one.  Other words are split where digits meet
+ * letters, so 7Eleven gives the same tokens as 7-Eleven and 7 Eleven.
  */
 PG_FUNCTION_INFO_V1(intl_prsgettoken);
 Datum
@@ -211,13 +354,15 @@ intl_prsgettoken(PG_FUNCTION_ARGS)
 	int32		rule = 0;
 	int32		end = next_segment(state, &rule);
 	int			type;
+	int			kind = 0;
 
 	if (end == UBRK_DONE)
 		PG_RETURN_INT32(0);
 
 	type = token_type(rule);
-	if (state->keep_runs && (type == ICU_WORD || type == ICU_NUMBER) &&
-		starts_unsegmented(state->buf + state->start, end - state->start))
+	if (state->keep_runs && type != ICU_BLANK)
+		kind = run_kind(state->buf + state->start, end - state->start);
+	if (kind != 0)
 	{
 		for (;;)
 		{
@@ -228,11 +373,11 @@ intl_prsgettoken(PG_FUNCTION_ARGS)
 			if (next_end == UBRK_DONE)
 				break;
 			next_type = token_type(next_rule);
-			if ((next_type == ICU_WORD || next_type == ICU_NUMBER) &&
-				starts_unsegmented(state->buf + end, next_end - end))
+			if (next_type != ICU_BLANK &&
+				run_kind(state->buf + end, next_end - end) == kind)
 			{
 				end = next_end;
-				type = ICU_WORD;
+				type = kind == 1 ? ICU_WORD : ICU_KANA;
 				continue;
 			}
 			state->has_pending = true;
@@ -240,6 +385,32 @@ intl_prsgettoken(PG_FUNCTION_ARGS)
 			state->pending_rule = next_rule;
 			break;
 		}
+	}
+	else if (type == ICU_WORD || type == ICU_NUMBER)
+	{
+		int32		split = digit_split(state->buf + state->start, end - state->start);
+		UChar32		first;
+		int32		i = 0;
+
+		if (split > 0)
+		{
+			state->has_pending = true;
+			state->pending_end = end;
+			state->pending_rule = rule;
+			end = state->start + split;
+		}
+		U8_NEXT(state->buf + state->start, i, end - state->start, first);
+		type = u_charType(first) == U_DECIMAL_DIGIT_NUMBER ? ICU_NUMBER : ICU_WORD;
+	}
+
+	if (type != ICU_BLANK)
+	{
+		join_parser = state->id;
+		join_seq = ++state->seq;
+		join_adjacent = state->prev_word_end >= 0 &&
+			only_spaces_or_dashes(state->buf + state->prev_word_end,
+								  state->start - state->prev_word_end);
+		state->prev_word_end = end;
 	}
 
 	*token = state->buf + state->start;
@@ -375,11 +546,92 @@ fold_arabic(UChar32 c)
 	return c;
 }
 
+typedef struct HanPair
+{
+	UChar32		from;
+	UChar32		to;
+} HanPair;
+
+static HanPair *hant_hans = NULL;
+static int32 hant_hans_count = 0;
+
+/*
+ * ICU's Traditional-Simplified transliterator maps one character at a time,
+ * but running it per token is slow, so its mappings are read once into a
+ * sorted table.
+ */
+static void
+load_hant_hans(void)
+{
+	UErrorCode	status = U_ZERO_ERROR;
+	UTransliterator *trans;
+	USet	   *source;
+	int32		size;
+	HanPair    *pairs;
+	int32		n = 0;
+
+	trans = utrans_openU(u"Traditional-Simplified", -1, UTRANS_FORWARD, NULL, 0, NULL, &status);
+	check_icu(status, "utrans_openU");
+	source = utrans_getSourceSet(trans, false, NULL, &status);
+	check_icu(status, "utrans_getSourceSet");
+	size = uset_size(source);
+	pairs = MemoryContextAlloc(TopMemoryContext, sizeof(HanPair) * (size + 1));
+	for (int32 k = 0; k < size; k++)
+	{
+		UChar32		c = uset_charAt(source, k);
+		UChar		buf[8];
+		int32		len = 0;
+		int32		limit;
+		int32		j = 0;
+		UChar32		to;
+
+		U16_APPEND_UNSAFE(buf, len, c);
+		limit = len;
+		utrans_transUChars(trans, buf, &len, 8, 0, &limit, &status);
+		check_icu(status, "utrans_transUChars");
+		U16_NEXT(buf, j, len, to);
+		if (j == len && to != c)
+		{
+			pairs[n].from = c;
+			pairs[n].to = to;
+			n++;
+		}
+	}
+	uset_close(source);
+	utrans_close(trans);
+	hant_hans_count = n;
+	hant_hans = pairs;
+}
+
+static UChar32
+simplify_han(UChar32 c)
+{
+	int32		lo = 0;
+	int32		hi;
+
+	if (hant_hans == NULL)
+		load_hant_hans();
+	hi = hant_hans_count - 1;
+	while (lo <= hi)
+	{
+		int32		mid = (lo + hi) / 2;
+
+		if (hant_hans[mid].from == c)
+			return hant_hans[mid].to;
+		if (hant_hans[mid].from < c)
+			lo = mid + 1;
+		else
+			hi = mid - 1;
+	}
+	return c;
+}
+
 /*
  * Case-folds with NFKC_Casefold, which also applies NFKC and drops default
  * ignorables (soft hyphen, zero-width joiners, variation selectors), then
- * removes apostrophes, folds Arabic letter variants and maps every decimal
- * digit to ASCII.  NFKC splits the Thai and Lao vowel sara am into nikhahit +
+ * removes apostrophes, folds Arabic letter variants, maps every decimal
+ * digit to ASCII, writes hiragana as katakana and traditional Chinese
+ * characters as simplified.  NFKC splits the Thai and Lao vowel sara am into nikhahit +
  * sara aa, which ICU's dictionaries don't recognize, so the pair is
  * recombined.  U+0130 becomes a plain i rather than i + combining dot.
  */
@@ -448,6 +700,10 @@ fold_text(const UChar *src, int32 len, int32 *out_len)
 			if (c == 0)
 				continue;
 		}
+		else if ((c >= 0x3041 && c <= 0x3096) || c == 0x309D || c == 0x309E)
+			c += 0x60;
+		else if (c >= 0x3400)
+			c = simplify_han(c);
 		U16_APPEND_UNSAFE(out, n, c);
 	}
 	*out_len = n;
@@ -531,6 +787,39 @@ arabic_article_end(const UChar *s, int32 len)
 	return -1;
 }
 
+/*
+ * Returns the UTF-16 offsets where a lowercase letter is followed by an
+ * uppercase one (CarrefourSA, McDonald's), ending with len, or NULL if there
+ * are none.
+ */
+static int32 *
+case_splits(const UChar *s, int32 len, int32 *count)
+{
+	int32	   *splits = NULL;
+	int32		i = 0;
+	bool		prev_lower = false;
+
+	*count = 0;
+	while (i < len)
+	{
+		int32		at = i;
+		UChar32		c;
+
+		U16_NEXT(s, i, len, c);
+		if (prev_lower && (u_isupper(c) || u_istitle(c)))
+		{
+			if (splits == NULL)
+				splits = palloc(sizeof(int32) * (len + 1));
+			splits[(*count)++] = at;
+		}
+		if (u_charType(c) != U_NON_SPACING_MARK)
+			prev_lower = u_islower(c);
+	}
+	if (splits != NULL)
+		splits[(*count)++] = len;
+	return splits;
+}
+
 PG_FUNCTION_INFO_V1(intl_normalize_init);
 Datum
 intl_normalize_init(PG_FUNCTION_ARGS)
@@ -551,6 +840,11 @@ intl_normalize_init(PG_FUNCTION_ARGS)
  * two final lexemes at its position, the whole word and the word without the
  * article, already folded the way unaccent and simple would.  A query for
  * either form then matches.
+ *
+ * A token with a lowercase letter followed by an uppercase one (CarrefourSA)
+ * likewise returns the whole word and its parts, all at its position.  The
+ * parts are a separate variant, so a query for CarrefourSA matches either the
+ * whole word or both parts, and one written Carrefoursa still matches.
  */
 PG_FUNCTION_INFO_V1(intl_normalize_lexize);
 Datum
@@ -567,6 +861,9 @@ intl_normalize_lexize(PG_FUNCTION_ARGS)
 	int32		cut;
 	bool		latin = false;
 	bool		plain_ascii = true;
+	bool		camel = false;
+	int32	   *splits;
+	int32		nsplits;
 	TSLexeme   *res;
 
 	if (GetDatabaseEncoding() != PG_UTF8)
@@ -575,9 +872,13 @@ intl_normalize_lexize(PG_FUNCTION_ARGS)
 				 errmsg("intl_normalize requires a UTF8 database")));
 
 	for (int32 i = 0; i < len; i++)
+	{
 		if ((unsigned char) in[i] >= 0x80 || in[i] == '\'' || in[i] == '`')
 			plain_ascii = false;
-	if (plain_ascii)
+		else if (i > 0 && islower((unsigned char) in[i - 1]) && isupper((unsigned char) in[i]))
+			camel = true;
+	}
+	if (plain_ascii && !camel)
 		PG_RETURN_POINTER(NULL);
 
 	src = utf8_to_utf16(in, len, &src_len);
@@ -597,6 +898,27 @@ intl_normalize_lexize(PG_FUNCTION_ARGS)
 			rest = folded + cut;
 			rest_len = folded_len - cut;
 		}
+	}
+
+	if (rest == NULL && !starts_unsegmented(in, len) &&
+		(splits = case_splits(src, src_len, &nsplits)) != NULL)
+	{
+		int32		from = 0;
+
+		res = palloc0(sizeof(TSLexeme) * (nsplits + 2));
+		folded = fold_latin(folded, &folded_len);
+		res[0].lexeme = utf16_to_utf8(folded, folded_len);
+		for (int32 j = 0; j < nsplits; j++)
+		{
+			int32		part_len;
+			UChar	   *part = fold_text(src + from, splits[j] - from, &part_len);
+
+			part = fold_latin(part, &part_len);
+			res[j + 1].lexeme = utf16_to_utf8(part, part_len);
+			res[j + 1].nvariant = 1;
+			from = splits[j];
+		}
+		PG_RETURN_POINTER(res);
 	}
 
 	if (rest != NULL)
@@ -622,26 +944,6 @@ intl_normalize_lexize(PG_FUNCTION_ARGS)
 		res[0].flags = TSL_FILTER;
 	}
 	PG_RETURN_POINTER(res);
-}
-
-/*
- * Characters whose words ICU keeps as long dictionary or unknown runs, so a
- * search for part of one has to match pieces of the token.  U+30FC (prolonged
- * sound mark) is Common script but only appears inside kana words.
- */
-static bool
-is_ngram_char(UChar32 c)
-{
-	UErrorCode	status = U_ZERO_ERROR;
-	UScriptCode script;
-
-	if (c == 0x30FC)
-		return true;
-	script = uscript_getScript(c, &status);
-	if (U_FAILURE(status))
-		return false;
-	return script == USCRIPT_HAN || script == USCRIPT_HIRAGANA ||
-		script == USCRIPT_KATAKANA || script == USCRIPT_HANGUL;
 }
 
 static UBreakIterator *char_iter = NULL;
@@ -766,5 +1068,101 @@ intl_ngram_lexize(PG_FUNCTION_ARGS)
 		res[k++].lexeme = pnstrdup(in + starts[j], starts[j + 1] - starts[j]);
 	for (int32 j = 0; j + 1 < n; j++)
 		res[k++].lexeme = pnstrdup(in + starts[j], starts[j + 2] - starts[j]);
+	PG_RETURN_POINTER(res);
+}
+
+typedef struct JoinDict
+{
+	int32		max_length;
+} JoinDict;
+
+static uint32 last_parser = 0;
+static uint32 last_seq = 0;
+static char last_word[64];
+static int32 last_chars = -1;
+
+/*
+ * Returns the number of characters in a word of a spaced script, or -1 for a
+ * word with Han, kana, Hangul, Thai, Lao, Khmer or Burmese in it.
+ */
+static int32
+spaced_chars(const char *s, int32 len)
+{
+	int32		i = 0;
+	int32		chars = 0;
+
+	while (i < len)
+	{
+		UChar32		c;
+
+		chars++;
+		if ((unsigned char) s[i] < 0x80)
+		{
+			i++;
+			continue;
+		}
+		U8_NEXT(s, i, len, c);
+		if (c < 0 || is_ngram_char(c) || is_unsegmented_script(c))
+			return -1;
+	}
+	return chars;
+}
+
+PG_FUNCTION_INFO_V1(intl_join_init);
+Datum
+intl_join_init(PG_FUNCTION_ARGS)
+{
+	List	   *options = (List *) PG_GETARG_POINTER(0);
+	JoinDict   *d = palloc0(sizeof(JoinDict));
+	ListCell   *l;
+
+	d->max_length = 0;
+	foreach(l, options)
+	{
+		DefElem    *def = (DefElem *) lfirst(l);
+
+		if (strcmp(def->defname, "max_length") == 0)
+			d->max_length = atoi(defGetString(def));
+		else
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+					 errmsg("unrecognized intl_join parameter: \"%s\"", def->defname)));
+	}
+	PG_RETURN_POINTER(d);
+}
+
+/*
+ * Lowercases the token like simple.  With max_length set, when the previous
+ * token was also lexized here, only spaces or dashes separate the two, and one
+ * of them has at most max_length characters, also adds both words run
+ * together (mc donalds → mcdonalds, Sài Gòn → saigon) as a second variant at
+ * this token's position, so a phrase query for one spelling finds the other.
+ * Words in scripts written without spaces are never joined.
+ */
+PG_FUNCTION_INFO_V1(intl_join_lexize);
+Datum
+intl_join_lexize(PG_FUNCTION_ARGS)
+{
+	JoinDict   *d = (JoinDict *) PG_GETARG_POINTER(0);
+	char	   *in = (char *) PG_GETARG_POINTER(1);
+	int32		len = PG_GETARG_INT32(2);
+	char	   *word = str_tolower(in, len, DEFAULT_COLLATION_OID);
+	int32		word_len = strlen(word);
+	TSLexeme   *res = palloc0(sizeof(TSLexeme) * 3);
+	int32		chars = word_len < (int32) sizeof(last_word) ? spaced_chars(word, word_len) : -1;
+
+	res[0].lexeme = word;
+	if (chars > 0 && last_chars > 0 && join_adjacent &&
+		last_parser == join_parser && last_seq + 1 == join_seq &&
+		Min(chars, last_chars) <= d->max_length)
+	{
+		res[1].lexeme = psprintf("%s%s", last_word, word);
+		res[1].nvariant = 1;
+	}
+	last_chars = chars;
+	if (chars > 0)
+		memcpy(last_word, word, word_len + 1);
+	last_parser = join_parser;
+	last_seq = join_seq;
 	PG_RETURN_POINTER(res);
 }

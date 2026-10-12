@@ -13,7 +13,7 @@ The evidence comes from three places:
 | Language | Verdict | Benchmark recall (default → intl_search → intl_search_ngram) | Overmatch (intl_search / ngram) | Main weakness |
 |---|---|--:|--:|---|
 | Chinese | **Good** | 10% → 93% → 99% | 16% / 18% | Transliterated names split into single characters; some compounds stay whole |
-| Japanese | **Good for kanji and katakana** | 7% → 86% → 98% | 20% / 53% | Hiragana words split into syllables; compounds; half-width kana |
+| Japanese | **Good for kanji and katakana** | 7% → 86% → 100% | 20% / 54% | Hiragana words split into syllables with intl_search; compounds |
 | Thai | **Good with intl_search_ngram** | 5% → 79% → 98% | 44% / 69% | intl_search alone splits unknown names and loanwords unpredictably |
 | Lao, Khmer, Burmese | Likely good (not benchmarked) | | | Same dictionary approach as Thai |
 | Korean | **Good with intl_search_ngram** | 47% → 48% → 100% | 1% / 22% | intl_search alone leaves particles and compound names attached |
@@ -47,7 +47,7 @@ Where it falls short:
 
 - **Transliterated foreign names** aren't in ICU's dictionary and come out as single characters: `朱莉娅·加布里埃莱斯基` → `朱|莉|娅|加布里|埃|莱|斯|基`, and `星巴克咖啡` → `星|巴|克|咖啡`. A phrase query still finds them, but a plain query overmatches.
 - **Some compounds stay whole.** `國際機場` (international airport, Traditional) is one token, so a search for `機場` misses it, while the Simplified `国际机场` splits into `国际|机场`. This is most of the 7% the benchmark missed, and `intl_search_ngram` finds it (99% recall, 18% overmatch).
-- **Traditional and Simplified characters are different text.** `麥當勞` and `麦当劳` don't match each other. Convert one way before indexing if your data mixes them.
+- **Traditional and Simplified characters** match each other with `intl_search` and `intl_search_ngram`, which write traditional characters as simplified: `麥當勞` finds `麦当劳` and the other way round. `intl_simple` keeps them apart.
 
 ## Japanese: good for kanji and katakana, weak for hiragana
 
@@ -55,12 +55,12 @@ Recall goes from 7% to 86%, with 20% overmatch against 54% for substring search.
 
 Where it falls short:
 
-- **Hiragana-only words split into syllables:** `ひらがな` → `ひ|ら|が|な`, `やきとり` → `や|き|とり`, `らーめん` → `ら|ー|めん`. Verb forms fragment the same way: `食べました` → `食|べ|ま|した`. Use phrase queries; matching across spelling variants (`らーめん` and `ラーメン`) needs a kana-folding step that textsearch_intl doesn't do.
+- **Hiragana-only words split into syllables:** `ひらがな` → `ひ|ら|が|な`, `やきとり` → `や|き|とり`, `らーめん` → `ら|ー|めん`. Verb forms fragment the same way: `食べました` → `食|べ|ま|した`. `intl_normalize` writes hiragana as katakana, and `intl_search_ngram`'s parser keeps adjacent kana words together as one run, so `らーめん` and `ラーメン` find each other there. With `intl_search` they still don't, because the hiragana spelling is split and the katakana one isn't.
 - **Unknown katakana names** can come out as fragments (`ンズ`, `ジョ`), which then match inside unrelated names. This is most of the 20% overmatch.
 - **Half-width katakana** (`ｾﾌﾞﾝｲﾚﾌﾞﾝ`) only matches full-width with `intl_search`, which applies NFKC.
 - **No morphology.** ICU isn't a morphological analyzer like MeCab or Kuromoji, so it won't link inflected forms or break up every compound.
 
-`intl_search_ngram` raises recall to 98% and finds words inside compounds (`駅` in `駅前`), but overmatch rises to 53%, the same as pg_bigm's, because Japanese titles are full of short kana sequences that also occur inside other words.
+`intl_search_ngram` raises recall to 100% and finds words inside compounds (`駅` in `駅前`), but overmatch rises to 54%, the same as pg_bigm's, because Japanese titles are full of short kana sequences that also occur inside other words.
 
 ## Thai: use intl_search_ngram
 
@@ -90,7 +90,7 @@ Korean puts spaces between phrases, but attaches particles, endings and other no
 
 ## Vietnamese: no gain
 
-Vietnamese writes each syllable separately, and most words are two or more syllables. ICU splits at every space, like the default parser: `Nhà hàng Phở Hà Nội` → `Nhà|hàng|Phở|Hà|Nội`. Use `phraseto_tsquery` so `Hà Nội` matches as a unit, and the `unaccent` dictionary if users type without diacritics.
+Vietnamese writes each syllable separately, and most words are two or more syllables. ICU splits at every space, like the default parser: `Nhà hàng Phở Hà Nội` → `Nhà|hàng|Phở|Hà|Nội`. Use `phraseto_tsquery` so `Hà Nội` matches as a unit. `intl_search` folds the diacritics. With `intl_join`'s `max_length` set it also indexes adjacent short syllables run together, so `hanoi` finds `Hà Nội` and `saigon` finds `Sài Gòn`; the other direction (`sai gon` finding `Saigon`) still doesn't match.
 
 ## Arabic: better with intl_search; Hebrew: no gain
 
@@ -104,6 +104,8 @@ For English, Russian, Greek, Hindi, German, Turkish and other languages that sep
 
 - **Apostrophes stay inside the word:** `McDonald's` is one token, `mcdonald's`, so a search for `mcdonalds` or `mcdonald` doesn't match it. The default parser splits it into `mcdonald|s` instead. `intl_search` removes the apostrophe, so `mcdonalds` matches, and indexes French and Italian elisions both ways, so `occitane` finds `L'Occitane`.
 - **Case folds fully:** `intl_search` uses Unicode case folding rather than the database's `lower()`, so Greek final sigma (`ΑΘΗΝΑΣ`, `Αθήνας`), German `ß` (`STRASSE`) and Turkish `İ` match.
-- **Hyphens and ampersands split:** `7-Eleven` → `7|eleven`, `co-op` → `co|op`, `AT&T` → `at|t`.
+- **Hyphens and ampersands split:** `7-Eleven` → `7|eleven`, `co-op` → `co|op`, `AT&T` → `at|t`. Digits and letters split too (`7Eleven` → `7|eleven`).
+- **Case changes inside a word split:** `intl_search` indexes `CarrefourSA` as the whole word and as its parts, so `carrefour` finds it.
+- **Words written together or apart** (`Mc Donald's` and `McDonald's`) match only with `intl_join`'s `max_length` set, which adds the two words run together (see the README).
 - **URLs and hostnames stay whole:** `www.example.com` is one token.
 - **No stemming or compound splitting.** `Kaffeehaus` doesn't match `haus`. For stemming, map `word` to a Snowball dictionary: `ALTER TEXT SEARCH CONFIGURATION my_config ALTER MAPPING FOR word WITH english_stem`.

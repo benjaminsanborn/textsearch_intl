@@ -143,10 +143,11 @@ SELECT * FROM tokens('iPhone手机壳');
 (3 rows)
 
 SELECT * FROM tokens('ＡＢＣ１２３');
- alias  |    token     
---------+--------------
- number | ＡＢＣ１２３
-(1 row)
+ alias  | token  
+--------+--------
+ word   | ＡＢＣ
+ number | １２３
+(2 rows)
 
 SELECT * FROM tokens(U&'Cafe\0301 cafe');
  alias | token 
@@ -169,11 +170,14 @@ SELECT * FROM tokens('1,000.50 3.14 -5 1e10 v1.2.3 24/7');
  number | 1,000.50
  number | 3.14
  number | 5
- number | 1e10
- number | v1.2.3
+ number | 1
+ word   | e
+ number | 10
+ word   | v
+ number | 1.2.3
  number | 24
  number | 7
-(7 rows)
+(10 rows)
 
 SELECT * FROM tokens('McDonald''s rock''n''roll 7-Eleven U.S.A. AT&T');
  alias  |    token    

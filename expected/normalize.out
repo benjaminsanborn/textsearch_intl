@@ -6,12 +6,12 @@ FROM (VALUES ('plain'), ('Café'), ('McDonald''s'), ('McDonald’s'), ('ｾﾌ�
              (U&'\0E19\0E4D\0E32'), (U&'\0E99\0ECD\0EB2'), ('น้ำ'), ('’'),
              ('ΑΘΗΝΑΣ'), ('Αθήνας'), ('Straße'), ('İstanbul'), ('Oʻahu'), ('Пʼятниця'), (U&'soft\00ADhyphen'),
              ('أحمد'), ('مدرسة'), ('کتابی'), ('مُحَمَّد'), ('مـطـعـم'), ('٧'), ('۷'), ('๗'), ('१२३')) v(input);
-    input     |  ts_lexize   
---------------+--------------
+    input     |       ts_lexize        
+--------------+------------------------
  plain        | 
  Café         | {café}
- McDonald's   | {mcdonalds}
- McDonald’s   | {mcdonalds}
+ McDonald's   | {mcdonalds,mc,donalds}
+ McDonald’s   | {mcdonalds,mc,donalds}
  ｾﾌﾞﾝ         | {セブン}
  ＡＢＣ１２３ | {abc123}
  ㈱           | {(株)}
@@ -57,9 +57,9 @@ FROM (VALUES ('L''Occitane'), ('l’École'), ('dell''Arte'), ('qu''il'), ('O''R
 
 -- intl_search chains intl_normalize, unaccent and simple (ts_debug shows only the first dictionary's output)
 SELECT to_tsvector('intl_search', 'McDonald’s Café ｾﾌﾞﾝｲﾚﾌﾞﾝ Пятёрочка ร้านอาหาร ＡＢＣ１２３');
-                                        to_tsvector                                        
--------------------------------------------------------------------------------------------
- 'abc123':8 'cafe':2 'mcdonalds':1 'пятерочка':5 'ร้าน':6 'อาหาร':7 'イレブン':4 'セブン':3
+                                                    to_tsvector                                                    
+-------------------------------------------------------------------------------------------------------------------
+ '123':9 'abc':8 'cafe':2 'donalds':1 'mc':1 'mcdonalds':1 'пятерочка':5 'ร้าน':6 'อาหาร':7 'イレブン':4 'セブン':3
 (1 row)
 
 -- Names match regardless of accents, apostrophes, ё/е and character width
@@ -134,3 +134,109 @@ SELECT ts_headline('intl_search', 'McDonald’s Café, Zürich', phraseto_tsquer
 -- The dictionary takes no options
 CREATE TEXT SEARCH DICTIONARY intl_normalize_bad (TEMPLATE = intl_normalize_template, form = 'nfc');
 ERROR:  unrecognized intl_normalize parameter: "form"
+-- Hiragana is written as katakana and traditional Chinese characters as simplified
+SELECT input, ts_lexize('intl_normalize', input)
+FROM (VALUES ('すし'), ('らーめん'), ('ゝ'), ('麥當勞'), ('國際機場'), ('麦当劳'), ('東京駅')) v(input);
+  input   | ts_lexize  
+----------+------------
+ すし     | {スシ}
+ らーめん | {ラーメン}
+ ゝ       | {ヽ}
+ 麥當勞   | {麦当劳}
+ 國際機場 | {国际机场}
+ 麦当劳   | 
+ 東京駅   | {东京駅}
+(7 rows)
+
+-- Digits and letters are split apart, and a lowercase-to-uppercase change splits a word into parts kept at its position
+SELECT to_tsvector('intl_search', '7-Eleven 7Eleven Sài Gòn CarrefourSA Express, Shop');
+                                          to_tsvector                                           
+------------------------------------------------------------------------------------------------
+ '7':1,3 'carrefour':7 'carrefoursa':7 'eleven':2,4 'express':8 'gon':6 'sa':7 'sai':5 'shop':9
+(1 row)
+
+-- With max_length set, two words separated only by spaces or dashes, one of them at most that long, are also indexed run together
+ALTER TEXT SEARCH DICTIONARY intl_join (max_length = 3);
+SELECT to_tsvector('intl_search', '7-Eleven 7Eleven Sài Gòn CarrefourSA Express, Shop');
+                                                                    to_tsvector                                                                    
+---------------------------------------------------------------------------------------------------------------------------------------------------
+ '7':1,3 '7eleven':2,4 'carrefour':7 'carrefoursa':7 'eleven':2,4 'eleven7':3 'elevensai':5 'express':8 'gon':6 'sa':7 'sai':5 'saigon':6 'shop':9
+(1 row)
+
+ALTER TEXT SEARCH DICTIONARY intl_join (max_length = 100);
+SELECT phraseto_tsquery('intl_search', 'Seven Eleven'), phraseto_tsquery('intl_search', 'CarrefourSA');
+             phraseto_tsquery             |          phraseto_tsquery          
+------------------------------------------+------------------------------------
+ 'seven' <-> ( 'eleven' | 'seveneleven' ) | 'carrefoursa' | 'carrefour' & 'sa'
+(1 row)
+
+SELECT q, name,
+       to_tsvector('intl_search', name) @@ phraseto_tsquery('intl_search', q) AS intl_search,
+       to_tsvector('intl_search_ngram', name) @@ phraseto_tsquery('intl_search_ngram', q) AS intl_search_ngram,
+       to_tsvector('intl_search', name) @@ plainto_tsquery('intl_search', q) AS intl_search_and
+FROM (VALUES ('7-Eleven', '7Eleven Bangkok'),
+             ('7 eleven', '7-ELEVEN'),
+             ('7eleven', '7 Eleven'),
+             ('seveneleven', 'Seven Eleven'),
+             ('seveneleven', 'Seven-Eleven'),
+             ('Seven Eleven', 'SevenEleven'),
+             ('Seven Eleven', 'Seveneleven'),
+             ('saigon', 'Sài Gòn Coffee'),
+             ('sai gon', 'Saigon Coffee'),
+             ('mcdonalds', 'Mc Donald''s'),
+             ('McDonald''s', 'MCDONALDS'),
+             ('donalds', 'McDonald''s'),
+             ('carrefour', 'CarrefourSA'),
+             ('carrefoursa', 'Carrefour SA'),
+             ('CarrefourSA', 'Carrefoursa'),
+             ('carrefour express', 'CarrefourSA Express'),
+             ('Carrefour SA', 'CarrefourSA'),
+             ('cafe shop', 'Cafe, Shop'),
+             ('cafeshop', 'Cafe, Shop'),
+             ('макка', 'Мак-Ка'),
+             ('route66', 'Route 66 Diner'),
+             ('らーめん', 'ラーメン屋'),
+             ('ラーメン', 'らーめん一番'),
+             ('麥當勞', '麦当劳'),
+             ('麦当劳', '麥當勞台北店'),
+             ('机场', '國際機場')) v(q, name);
+         q         |        name         | intl_search | intl_search_ngram | intl_search_and 
+-------------------+---------------------+-------------+-------------------+-----------------
+ 7-Eleven          | 7Eleven Bangkok     | t           | t                 | t
+ 7 eleven          | 7-ELEVEN            | t           | t                 | t
+ 7eleven           | 7 Eleven            | t           | t                 | t
+ seveneleven       | Seven Eleven        | t           | t                 | t
+ seveneleven       | Seven-Eleven        | t           | t                 | t
+ Seven Eleven      | SevenEleven         | f           | f                 | t
+ Seven Eleven      | Seveneleven         | f           | f                 | f
+ saigon            | Sài Gòn Coffee      | t           | t                 | t
+ sai gon           | Saigon Coffee       | f           | f                 | f
+ mcdonalds         | Mc Donald's         | t           | t                 | t
+ McDonald's        | MCDONALDS           | t           | t                 | t
+ donalds           | McDonald's          | t           | t                 | t
+ carrefour         | CarrefourSA         | t           | t                 | t
+ carrefoursa       | Carrefour SA        | t           | t                 | t
+ CarrefourSA       | Carrefoursa         | t           | t                 | t
+ carrefour express | CarrefourSA Express | t           | t                 | t
+ Carrefour SA      | CarrefourSA         | f           | f                 | t
+ cafe shop         | Cafe, Shop          | t           | t                 | t
+ cafeshop          | Cafe, Shop          | f           | f                 | f
+ макка             | Мак-Ка              | t           | t                 | t
+ route66           | Route 66 Diner      | t           | t                 | t
+ らーめん          | ラーメン屋          | f           | t                 | f
+ ラーメン          | らーめん一番        | f           | t                 | f
+ 麥當勞            | 麦当劳              | t           | t                 | t
+ 麦当劳            | 麥當勞台北店        | t           | t                 | t
+ 机场              | 國際機場            | f           | t                 | f
+(26 rows)
+
+ALTER TEXT SEARCH DICTIONARY intl_join (max_length);
+SELECT to_tsvector('intl_search', 'Mc Donald''s') @@ phraseto_tsquery('intl_search', 'mcdonalds') AS joined_by_default;
+ joined_by_default 
+-------------------
+ f
+(1 row)
+
+-- Unknown parameters are rejected
+ALTER TEXT SEARCH DICTIONARY intl_join (min_length = 3);
+ERROR:  unrecognized intl_join parameter: "min_length"

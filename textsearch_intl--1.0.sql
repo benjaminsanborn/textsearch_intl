@@ -68,10 +68,27 @@ CREATE TEXT SEARCH TEMPLATE intl_normalize_template (
 
 CREATE TEXT SEARCH DICTIONARY intl_normalize (TEMPLATE = intl_normalize_template);
 
+CREATE FUNCTION intl_join_init(internal)
+RETURNS internal
+AS 'MODULE_PATHNAME'
+LANGUAGE C STRICT;
+
+CREATE FUNCTION intl_join_lexize(internal, internal, internal, internal)
+RETURNS internal
+AS 'MODULE_PATHNAME'
+LANGUAGE C STRICT;
+
+CREATE TEXT SEARCH TEMPLATE intl_join_template (
+  INIT = intl_join_init,
+  LEXIZE = intl_join_lexize
+);
+
+CREATE TEXT SEARCH DICTIONARY intl_join (TEMPLATE = intl_join_template);
+
 CREATE TEXT SEARCH CONFIGURATION intl_search (PARSER = intl);
 
 ALTER TEXT SEARCH CONFIGURATION intl_search
-  ADD MAPPING FOR word, number, kana, ideo WITH intl_normalize, unaccent, simple;
+  ADD MAPPING FOR word, number, kana, ideo WITH intl_normalize, unaccent, intl_join;
 
 CREATE FUNCTION intl_ngram_init(internal)
 RETURNS internal
@@ -93,4 +110,4 @@ CREATE TEXT SEARCH DICTIONARY intl_ngram (TEMPLATE = intl_ngram_template);
 CREATE TEXT SEARCH CONFIGURATION intl_search_ngram (PARSER = intl_runs);
 
 ALTER TEXT SEARCH CONFIGURATION intl_search_ngram
-  ADD MAPPING FOR word, number, kana, ideo WITH intl_normalize, intl_ngram, unaccent, simple;
+  ADD MAPPING FOR word, number, kana, ideo WITH intl_normalize, intl_ngram, unaccent, intl_join;
