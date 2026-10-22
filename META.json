@@ -2,7 +2,7 @@
   "name": "textsearch_intl",
   "abstract": "Multilingual full text search: ICU word segmentation, normalization and n-gram matching",
   "description": "A PostgreSQL text search parser, dictionaries and configurations for names and short text in any script. ICU word boundaries split Chinese, Japanese, Thai and other unspaced scripts into words; a normalizing dictionary folds character widths, accents and apostrophes; an n-gram dictionary matches words inside Korean and CJK compounds.",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "maintainer": [
     "Benjamin Currie <benjaminsanborn@gmail.com>"
   ],
@@ -12,7 +12,7 @@
       "abstract": "Multilingual full text search: ICU word segmentation, normalization and n-gram matching",
       "file": "textsearch_intl--1.0.sql",
       "docfile": "README.md",
-      "version": "1.0.0"
+      "version": "1.0.1"
     }
   },
   "prereqs": {

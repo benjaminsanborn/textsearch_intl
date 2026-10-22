@@ -34,6 +34,11 @@ FROM generate_series(1, 10000) i;
 SELECT to_tsvector('intl_simple', '東京駅'), 1 / 0;
 SELECT to_tsvector('intl_simple', '東京駅');
 
+-- A token that folds to combining marks alone is a stopword, not an empty lexeme
+SELECT to_tsvector('intl_search', U&'\3164\0361 moreno');
+SELECT to_tsvector('intl_search_ngram', U&'\3164\0361');
+SELECT ts_lexize('intl_normalize', U&'\3164\0361');
+
 -- Other encodings are rejected
 SELECT current_setting('server_version_num')::int >= 150000 AS has_locale_provider \gset
 \if :has_locale_provider

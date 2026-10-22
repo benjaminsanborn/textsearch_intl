@@ -820,6 +820,28 @@ case_splits(const UChar *s, int32 len, int32 *count)
 	return splits;
 }
 
+/*
+ * True when the text has a letter or digit.  NFKC_Casefold drops default
+ * ignorables such as the Hangul filler, which the parser counts as a letter,
+ * so a token like U+3164 U+0361 can fold to combining marks alone.  Passed on,
+ * unaccent strips those to an empty lexeme, which to_tsvector rejects.
+ */
+static bool
+has_alnum(const UChar *s, int32 len)
+{
+	int32		i = 0;
+
+	while (i < len)
+	{
+		UChar32		c;
+
+		U16_NEXT(s, i, len, c);
+		if (u_isalnum(c))
+			return true;
+	}
+	return false;
+}
+
 PG_FUNCTION_INFO_V1(intl_normalize_init);
 Datum
 intl_normalize_init(PG_FUNCTION_ARGS)
@@ -883,6 +905,8 @@ intl_normalize_lexize(PG_FUNCTION_ARGS)
 
 	src = utf8_to_utf16(in, len, &src_len);
 	folded = fold_text(src, src_len, &folded_len);
+	if (!has_alnum(folded, folded_len))
+		PG_RETURN_POINTER(palloc0(sizeof(TSLexeme)));
 
 	cut = elision_end(src, src_len);
 	if (cut >= 0)
